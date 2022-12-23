@@ -1,0 +1,35 @@
+name: Test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install Rust Target
+      run: rustup target add wasm32-wasi
+    - name: Build
+      run: cargo build --verbose
+    - name: Test on WasmEdge
+      run: |
+        wget https://github.com/WasmEdge/WasmEdge/releases/download/0.11.2/WasmEdge-0.11.2-manylinux2014_x86_64.tar.gz
+        tar -zxf WasmEdge-0.11.2-manylinux2014_x86_64.tar.gz
+        wget https://github.com/WasmEdge/WasmEdge/releases/download/0.11.2/WasmEdge-plugin-wasi_crypto-0.11.2-manylinux2014_x86_64.tar.gz
+        tar -zxf WasmEdge-plugin-wasi_crypto-0.11.2-manylinux2014_x86_64.tar.gz
+        mkdir -p WasmEdge-0.11.2-Linux/lib/wasmedge/
+        cp libwasmedgePluginWasiCrypto.so WasmEdge-0.11.2-Linux/lib/wasmedge/
+        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(pwd)/WasmEdge-0.11.2-Linux/lib
+        export PATH=$PATH:$(pwd)/WasmEdge-0.11.2-Linux/bin
+        export WASMEDGE_PLUGIN_PATH=$(pwd)/WasmEdge-0.11.2-Linux/lib/wasmedge
+        wasmedge -v
+        cargo test --release --verbose
