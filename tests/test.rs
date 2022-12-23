@@ -1,4 +1,4 @@
-use crypto_wasi::{hkdf, hkdf_hmac, hmac, pbkdf2, u8array_to_hex};
+use crypto_wasi::{hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex};
 
 #[test]
 fn test_hkdf() {
@@ -163,4 +163,70 @@ fn test_hmac() {
         .map(u8array_to_hex),
         Ok("87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854".to_string())
     );
+}
+
+#[test]
+fn test_scrypt() {
+    let cases = [
+        (
+            "",
+            "",
+            64,
+            16,
+            1,
+            1,
+            "77d6576238657b203b19ca42c18a0497f16b4844e3074ae8dfdffa3fede21442fcd0069ded0948f8326a753a0fc81f17e8d3e0fb2e0d3628cf35e20c38d18906",
+        ),
+        (
+            "password",
+            "NaCl",
+            64,
+            1024,
+            16,
+            8,
+            "fdbabe1c9d3472007856e7190d01e9fe7c6ad7cbc8237830e77376634b3731622eaf30d92e22a3886ff109279d9830dac727afb94a83ee6d8360cbdfa2cc0640",
+        ),
+        (
+            "pleaseletmein",
+            "SodiumChloride",
+            64,
+            16384,
+            1,
+            8,
+            "7023bdcb3afd7348461c06cd81fd38ebfda8fbba904f8e3ea9b543f6545da1f2d5432955613f0fcf62d49705242a9af9e61e85dc0d651e40dfcf017b45575887",
+        ),
+        (
+            "",
+            "",
+            64,
+            16,
+            1,
+            1,
+            "77d6576238657b203b19ca42c18a0497f16b4844e3074ae8dfdffa3fede21442fcd0069ded0948f8326a753a0fc81f17e8d3e0fb2e0d3628cf35e20c38d18906",
+        ),
+        (
+            "password",
+            "NaCl",
+            64,
+            1024,
+            16,
+            8,
+            "fdbabe1c9d3472007856e7190d01e9fe7c6ad7cbc8237830e77376634b3731622eaf30d92e22a3886ff109279d9830dac727afb94a83ee6d8360cbdfa2cc0640",
+        ),
+        (
+            "pleaseletmein",
+            "SodiumChloride",
+            64,
+            16384,
+            1,
+            8,
+            "7023bdcb3afd7348461c06cd81fd38ebfda8fbba904f8e3ea9b543f6545da1f2d5432955613f0fcf62d49705242a9af9e61e85dc0d651e40dfcf017b45575887",
+        ),
+    ];
+    for (password, salt, key_len, n, p, r, except) in cases {
+        assert_eq!(
+            scrypt(password, salt, n, r, p, key_len).map(u8array_to_hex),
+            Ok(except.to_string())
+        );
+    }
 }
