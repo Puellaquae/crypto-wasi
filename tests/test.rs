@@ -4,19 +4,35 @@ use crypto_wasi::{hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex};
 fn test_hkdf() {
     let cases256 = [(
         "sha256",
-        b"secret",
-        b"salt",
-        b"info",
+        "secret",
+        "salt",
+        "info",
         64,
         "f6d2fcc47cb939deafe3853a1e641a27e6924aff7a63d09cb04ccfffbe4776efdda39ae362b1346092d8cb4ee3f0ea74b84000e40066194ffca55d2128aa6c1a",
     ),
     (
         "sha256",
-        b"secret",
-        b"salt",
-        b"info",
+        "secret",
+        "salt",
+        "info",
         32,
         "f6d2fcc47cb939deafe3853a1e641a27e6924aff7a63d09cb04ccfffbe4776ef",
+    ),
+    (
+        "sha256",
+        "",
+        "",
+        "",
+        32,
+        "eb70f01dede9afafa449eee1b1286504e1f62388b3f7dd4f956697b0e828fe18",
+    ),
+    (
+        "sha256",
+        "",
+        "",
+        "",
+        48,
+        "eb70f01dede9afafa449eee1b1286504e1f62388b3f7dd4f956697b0e828fe181e59c2ec0fe6e7e7ac2613b6ab65342a",
     )];
     for (digest, key, salt, info, key_len, execpt) in cases256 {
         if key_len == 32 {

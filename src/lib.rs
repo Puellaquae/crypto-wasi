@@ -1,14 +1,19 @@
 mod raw;
 
-/// Behaviour like 
-/// 
+const NONE_OPTS: raw::OptOptions = raw::OptOptions {
+    tag: raw::OPT_OPTIONS_U_NONE.raw(),
+    u: raw::OptOptionsUnion { none: () },
+};
+
+/// Behaviour like
+///
 /// ```js
 /// let hmac = createHmac(alg, key);
 /// infos.forEach(info => hmac.update(info));
 /// let return = hmac.digest();
 /// ```
 pub fn hmac(
-    alg: &'static str,
+    alg: &str,
     key: impl AsRef<[u8]>,
     infos: &[impl AsRef<[u8]>],
 ) -> Result<Vec<u8>, raw::CryptoErrno> {
@@ -19,10 +24,6 @@ pub fn hmac(
         _ => unreachable!(),
     };
     unsafe {
-        let none_opts = raw::OptOptions {
-            tag: raw::OPT_OPTIONS_U_NONE.raw(),
-            u: raw::OptOptionsUnion { none: () },
-        };
         let hmac_key = raw::symmetric_key_import(hmac_alg, key.as_ptr(), key.len())?;
         let hmac_handle = raw::symmetric_state_open(
             hmac_alg,
@@ -30,7 +31,7 @@ pub fn hmac(
                 tag: raw::OPT_SYMMETRIC_KEY_U_SOME.raw(),
                 u: raw::OptSymmetricKeyUnion { some: hmac_key },
             },
-            none_opts,
+            NONE_OPTS,
         )?;
         for info in infos {
             let info = info.as_ref();
@@ -47,9 +48,52 @@ pub fn hmac(
     }
 }
 
+fn hkdf_extract(
+    alg: &str,
+    key: impl AsRef<[u8]>,
+    salt: impl AsRef<[u8]>,
+) -> Result<raw::SymmetricKey, raw::CryptoErrno> {
+    let (extract_alg, expand_alg) = match alg {
+        "sha256" | "SHA256" => ("HKDF-EXTRACT/SHA-256", "HKDF-EXPAND/SHA-256"),
+        "sha512" | "SHA512" => ("HKDF-EXTRACT/SHA-512", "HKDF-EXPAND/SHA-512"),
+        _ => return Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
+    };
+    let key = key.as_ref();
+    let salt = salt.as_ref();
+    if !key.is_empty() {
+        unsafe {
+            let extract_key = raw::symmetric_key_import(extract_alg, key.as_ptr(), key.len())?;
+            let extract_handle = raw::symmetric_state_open(
+                extract_alg,
+                raw::OptSymmetricKey {
+                    tag: raw::OPT_SYMMETRIC_KEY_U_SOME.raw(),
+                    u: raw::OptSymmetricKeyUnion { some: extract_key },
+                },
+                NONE_OPTS,
+            )?;
+            raw::symmetric_state_absorb(extract_handle, salt.as_ptr(), salt.len())?;
+            let expand_key = raw::symmetric_state_squeeze_key(extract_handle, expand_alg)?;
+            raw::symmetric_state_close(extract_handle)?;
+            raw::symmetric_key_close(extract_key)?;
+            Ok(expand_key)
+        }
+    } else {
+        let res = hmac(alg, salt, &[key])?;
+        unsafe { raw::symmetric_key_import(expand_alg, res.as_ptr(), res.len()) }
+    }
+}
+
+fn hkdf_extract_raw(
+    alg: &str,
+    key: impl AsRef<[u8]>,
+    salt: impl AsRef<[u8]>,
+) -> Result<Vec<u8>, raw::CryptoErrno> {
+    hmac(alg, salt, &[key])
+}
+
 /// As same as `hkdf`, but use hmac to manual expand
 pub fn hkdf_hmac(
-    alg: &'static str,
+    alg: &str,
     key: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
     info: impl AsRef<[u8]>,
@@ -58,35 +102,12 @@ pub fn hkdf_hmac(
     let key = key.as_ref();
     let salt = salt.as_ref();
     let info = info.as_ref();
-    let (extract_alg, expand_alg, hash_len) = match alg {
+    let (_, _, hash_len) = match alg {
         "sha256" | "SHA256" => ("HKDF-EXTRACT/SHA-256", "HKDF-EXPAND/SHA-256", 32),
         "sha512" | "SHA512" => ("HKDF-EXTRACT/SHA-512", "HKDF-EXPAND/SHA-512", 64),
         _ => return Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
     };
-    let none_opts = raw::OptOptions {
-        tag: raw::OPT_OPTIONS_U_NONE.raw(),
-        u: raw::OptOptionsUnion { none: () },
-    };
-    let expand_key = unsafe {
-        let extract_key = raw::symmetric_key_import(extract_alg, key.as_ptr(), key.len())?;
-        let extract_handle = raw::symmetric_state_open(
-            extract_alg,
-            raw::OptSymmetricKey {
-                tag: raw::OPT_SYMMETRIC_KEY_U_SOME.raw(),
-                u: raw::OptSymmetricKeyUnion { some: extract_key },
-            },
-            none_opts,
-        )?;
-        raw::symmetric_state_absorb(extract_handle, salt.as_ptr(), salt.len())?;
-        let expand_key = raw::symmetric_state_squeeze_key(extract_handle, expand_alg)?;
-        raw::symmetric_state_close(extract_handle)?;
-        let arr_out = raw::symmetric_key_export(expand_key)?;
-        raw::symmetric_key_close(expand_key)?;
-        let len = raw::array_output_len(arr_out)?;
-        let mut buf = vec![0; len];
-        raw::array_output_pull(arr_out, buf.as_mut_ptr(), buf.len())?;
-        Ok(buf)
-    }?;
+    let expand_key = hkdf_extract_raw(alg, key, salt)?;
     let mut out = vec![0; key_len];
     let mut last = [].as_slice();
     for (idx, chunk) in out.chunks_mut(hash_len).enumerate() {
@@ -99,7 +120,7 @@ pub fn hkdf_hmac(
 
 /// Behaviour like `crypto.hkdfSync`
 pub fn hkdf(
-    alg: &'static str,
+    alg: &str,
     key: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
     info: impl AsRef<[u8]>,
@@ -108,37 +129,21 @@ pub fn hkdf(
     let key = key.as_ref();
     let salt = salt.as_ref();
     let info = info.as_ref();
-    let (extract_alg, expand_alg) = match alg {
+    let (_, expand_alg) = match alg {
         "sha256" | "SHA256" => ("HKDF-EXTRACT/SHA-256", "HKDF-EXPAND/SHA-256"),
         "sha512" | "SHA512" => ("HKDF-EXTRACT/SHA-512", "HKDF-EXPAND/SHA-512"),
         _ => return Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
     };
-    let none_opts = raw::OptOptions {
-        tag: raw::OPT_OPTIONS_U_NONE.raw(),
-        u: raw::OptOptionsUnion { none: () },
-    };
     let mut out = vec![0; key_len];
+    let expand_key = hkdf_extract(alg, key, salt)?;
     unsafe {
-        let extract_key = raw::symmetric_key_import(extract_alg, key.as_ptr(), key.len())?;
-        let extract_handle = raw::symmetric_state_open(
-            extract_alg,
-            raw::OptSymmetricKey {
-                tag: raw::OPT_SYMMETRIC_KEY_U_SOME.raw(),
-                u: raw::OptSymmetricKeyUnion { some: extract_key },
-            },
-            none_opts,
-        )?;
-        raw::symmetric_state_absorb(extract_handle, salt.as_ptr(), salt.len())?;
-        let expand_key = raw::symmetric_state_squeeze_key(extract_handle, expand_alg)?;
-        raw::symmetric_state_close(extract_handle)?;
-        raw::symmetric_key_close(extract_key)?;
         let expand_handle = raw::symmetric_state_open(
             expand_alg,
             raw::OptSymmetricKey {
                 tag: raw::OPT_SYMMETRIC_KEY_U_SOME.raw(),
                 u: raw::OptSymmetricKeyUnion { some: expand_key },
             },
-            none_opts,
+            NONE_OPTS,
         )?;
         raw::symmetric_state_absorb(expand_handle, info.as_ptr(), info.len())?;
         raw::symmetric_state_squeeze(expand_handle, out.as_mut_ptr(), out.len())?;
@@ -150,7 +155,7 @@ pub fn hkdf(
 
 /// Behaviour like `crypto.pbkdf2Sync`
 pub fn pbkdf2(
-    alg: &'static str,
+    alg: &str,
     password: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
     iters: usize,
