@@ -1,4 +1,4 @@
-use crypto_wasi::{hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex};
+use crypto_wasi::{hash, hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex};
 
 #[test]
 fn test_hkdf() {
@@ -242,6 +242,21 @@ fn test_scrypt() {
     for (password, salt, key_len, n, p, r, except) in cases {
         assert_eq!(
             scrypt(password, salt, n, r, p, key_len).map(u8array_to_hex),
+            Ok(except.to_string())
+        );
+    }
+}
+
+#[test]
+fn test_hash() {
+    let cases = [(
+        "sha512",
+        "УТФ-8 text",
+        "4b21bbd1a68e690a730ddcb5a8bc94ead9879ffe82580767ad7ec6fa8ba2dea643a821af66afa9a45b6a78c712fecf0e56dc7f43aef4bcfc8eb5b4d8dca6ea5b",
+    )];
+    for (alg, data, except) in cases {
+        assert_eq!(
+            hash(alg, &[data]).map(u8array_to_hex),
             Ok(except.to_string())
         );
     }

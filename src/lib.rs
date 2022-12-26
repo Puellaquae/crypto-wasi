@@ -10,20 +10,21 @@ const NONE_KEY: raw::OptSymmetricKey = raw::OptSymmetricKey {
     u: raw::OptSymmetricKeyUnion { none: () },
 };
 
-pub struct Hash {
+pub struct Hmac {
     handle: raw::SymmetricState,
 }
 
-impl Hash {
-    pub fn create(alg: &str, key: Option<impl AsRef<[u8]>>) -> Result<Self, raw::CryptoErrno> {
-        let alg = match (alg, &key) {
-            ("sha256" | "SHA256" | "SHA-256", None) => "SHA-256",
-            ("sha512" | "SHA512" | "SHA-512", None) => "SHA-512",
-            ("sha256" | "SHA256" | "HMAC/SHA-256", Some(_)) => "HMAC/SHA-256",
-            ("sha512" | "SHA512" | "HMAC/SHA-512", Some(_)) => "HMAC/SHA-512",
+impl Hmac {
+    pub fn create<T>(alg: &str, key: T) -> Result<Self, raw::CryptoErrno>
+    where
+        T: AsRef<[u8]>,
+    {
+        let alg = match alg {
+            "sha256" | "SHA256" | "HMAC/SHA-256" => "HMAC/SHA-256",
+            "sha512" | "SHA512" | "HMAC/SHA-512" => "HMAC/SHA-512",
             _ => return Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
         };
-        let handle = if let Some(key) = key {
+        let handle = {
             let key = key.as_ref();
             unsafe {
                 let key = raw::symmetric_key_import(alg, key.as_ptr(), key.len())?;
@@ -35,8 +36,6 @@ impl Hash {
                 raw::symmetric_key_close(key)?;
                 state
             }
-        } else {
-            unsafe { raw::symmetric_state_open(alg, NONE_KEY, NONE_OPTS)? }
         };
         Ok(Self { handle })
     }
@@ -63,8 +62,52 @@ impl Hash {
             let tag = raw::symmetric_state_squeeze_tag(self.handle)?;
             raw::symmetric_tag_pull(tag, buf.as_mut_ptr(), buf.len())?;
             raw::symmetric_tag_close(tag)?;
-            Ok(())
         }
+        Ok(())
+    }
+}
+
+impl Drop for Hmac {
+    fn drop(&mut self) {
+        unsafe {
+            raw::symmetric_state_close(self.handle).unwrap();
+        }
+    }
+}
+
+pub struct Hash {
+    handle: raw::SymmetricState,
+    hash_len: usize
+}
+
+impl Hash {
+    pub fn create(alg: &str) -> Result<Self, raw::CryptoErrno> {
+        let (alg, hash_len) = match alg {
+            "sha256" | "SHA256" | "SHA-256" => ("SHA-256", 32),
+            "sha512" | "SHA512" | "SHA-512" => ("SHA-512", 64),
+            _ => return Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
+        };
+        let handle = { unsafe { raw::symmetric_state_open(alg, NONE_KEY, NONE_OPTS)? } };
+        Ok(Self { handle, hash_len })
+    }
+
+    pub fn update(&mut self, data: impl AsRef<[u8]>) -> Result<(), raw::CryptoErrno> {
+        let data = data.as_ref();
+        unsafe { raw::symmetric_state_absorb(self.handle, data.as_ptr(), data.len()) }
+    }
+
+    pub fn digest(&mut self) -> Result<Vec<u8>, raw::CryptoErrno> {
+        let mut out = vec![0; self.hash_len];
+        self.digest_into(&mut out)?;
+        Ok(out)
+    }
+
+    pub fn digest_into(&mut self, mut buf: impl AsMut<[u8]>) -> Result<(), raw::CryptoErrno> {
+        let buf = buf.as_mut();
+        unsafe {
+            raw::symmetric_state_squeeze(self.handle, buf.as_mut_ptr(), buf.len())?;
+        }
+        Ok(())
     }
 }
 
@@ -88,7 +131,22 @@ pub fn hmac(
     key: impl AsRef<[u8]>,
     infos: &[impl AsRef<[u8]>],
 ) -> Result<Vec<u8>, raw::CryptoErrno> {
-    let mut hash = Hash::create(alg, Some(key))?;
+    let mut hash = Hmac::create(alg, key)?;
+    for info in infos {
+        hash.update(info)?;
+    }
+    hash.digest()
+}
+
+/// Behaviour like
+///
+/// ```js
+/// let hash = createHash(alg);
+/// infos.forEach(info => hash.update(info));
+/// let return = hash.digest();
+/// ```
+pub fn hash(alg: &str, infos: &[impl AsRef<[u8]>]) -> Result<Vec<u8>, raw::CryptoErrno> {
+    let mut hash = Hash::create(alg)?;
     for info in infos {
         hash.update(info)?;
     }
