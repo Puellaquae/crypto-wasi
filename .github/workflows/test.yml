@@ -32,4 +32,4 @@ jobs:
         export PATH=$PATH:$(pwd)/WasmEdge-0.11.2-Linux/bin
         export WASMEDGE_PLUGIN_PATH=$(pwd)/WasmEdge-0.11.2-Linux/lib/wasmedge
         wasmedge -v
-        cargo test --verbose
+        cargo test --release --verbose
