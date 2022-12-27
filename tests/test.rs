@@ -1,4 +1,6 @@
-use crypto_wasi::{hash, hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex};
+use crypto_wasi::{
+    cipher, hash, hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex, Cipher, CryptoErrno,
+};
 
 #[test]
 fn test_hkdf() {
@@ -258,6 +260,47 @@ fn test_hash() {
         assert_eq!(
             hash(alg, &[data]).map(u8array_to_hex),
             Ok(except.to_string())
+        );
+    }
+}
+
+#[test]
+fn test_cipher_encrypt() {
+    let cases = [
+        (
+            "aes-128-gcm",
+            "0123456789abcdef",
+            "000000000000",
+            "additional data",
+            "message",
+            "98b59a86e8d580",
+            "f7d5c00f382a5de63a35bd8c3f7ba831",
+        ),
+        (
+            "aes-128-gcm",
+            "0123456789abcdef",
+            "000000000000",
+            "",
+            "message",
+            "98b59a86e8d580",
+            "6ac19ea404f15be37f2f4cfb0998c0b6",
+        ),
+    ];
+    for (alg, key, iv, aad, msg, enc, tag) in cases {
+        assert_eq!(
+            cipher(alg, key, iv, aad, msg).map(|(a, b)| (u8array_to_hex(a), u8array_to_hex(b))),
+            Ok((enc.to_string(), tag.to_string()))
+        );
+        assert_eq!(
+            || -> Result<(String, String), CryptoErrno> {
+                let mut c = Cipher::create(alg, key, iv)?;
+                c.set_aad(aad)?;
+                c.update(msg)?;
+                let out = c.fin()?;
+                let auth = c.get_auth_tag()?;
+                Ok((u8array_to_hex(out), u8array_to_hex(auth)))
+            }(),
+            Ok((enc.to_string(), tag.to_string()))
         );
     }
 }
