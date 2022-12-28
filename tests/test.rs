@@ -1,5 +1,5 @@
 use crypto_wasi::{
-    cipher, hash, hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex, Cipher, CryptoErrno,
+    encrypt, hash, hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex, Cipher, CryptoErrno,
 };
 
 #[test]
@@ -288,7 +288,7 @@ fn test_cipher_encrypt() {
     ];
     for (alg, key, iv, aad, msg, enc, tag) in cases {
         assert_eq!(
-            cipher(alg, key, iv, aad, msg).map(|(a, b)| (u8array_to_hex(a), u8array_to_hex(b))),
+            encrypt(alg, key, iv, aad, msg).map(|(a, b)| (u8array_to_hex(a), u8array_to_hex(b))),
             Ok((enc.to_string(), tag.to_string()))
         );
         assert_eq!(

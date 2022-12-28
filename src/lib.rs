@@ -586,7 +586,7 @@ impl Drop for Cipher {
     }
 }
 
-pub fn cipher<T: AsRef<[u8]>>(
+pub fn encrypt<T: AsRef<[u8]>>(
     alg: &str,
     key: T,
     iv: T,
