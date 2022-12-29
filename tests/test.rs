@@ -1,5 +1,5 @@
 use crypto_wasi::{
-    encrypt, hash, hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex, Cipher, CryptoErrno,
+    encrypt, hash, hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex, Cipher, CryptoErrno, decrypt, hex_to_u8array, Decipher,
 };
 
 #[test]
@@ -265,7 +265,7 @@ fn test_hash() {
 }
 
 #[test]
-fn test_cipher_encrypt() {
+fn test_cipher() {
     let cases = [
         (
             "aes-128-gcm",
@@ -301,6 +301,20 @@ fn test_cipher_encrypt() {
                 Ok((u8array_to_hex(out), u8array_to_hex(auth)))
             }(),
             Ok((enc.to_string(), tag.to_string()))
+        );
+        assert_eq!(
+            decrypt(alg, key, iv, aad, hex_to_u8array(tag).unwrap(), hex_to_u8array(enc).unwrap()),
+            Ok(msg.as_bytes().to_vec())
+        );
+        assert_eq!(
+            || -> Result<Vec<u8>, CryptoErrno> {
+                let mut c = Decipher::create(alg, key, iv)?;
+                c.set_aad(aad)?;
+                c.set_auth_tag(hex_to_u8array(tag).unwrap())?;
+                c.update(hex_to_u8array(enc).unwrap())?;
+                c.fin()
+            }(),
+            Ok(msg.as_bytes().to_vec())
         );
     }
 }
