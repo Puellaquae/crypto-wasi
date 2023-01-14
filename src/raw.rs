@@ -1286,7 +1286,6 @@ pub unsafe fn keypair_id(
 /// returned instead.
 ///
 /// This is an optional import, meaning that the function may not even exist.
-/// ```
 pub unsafe fn keypair_from_id(
     secrets_manager: SecretsManager,
     kp_id: *const u8,

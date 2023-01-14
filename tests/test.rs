@@ -1,5 +1,7 @@
 use crypto_wasi::{
-    encrypt, hash, hkdf, hkdf_hmac, hmac, pbkdf2, scrypt, u8array_to_hex, Cipher, CryptoErrno, decrypt, hex_to_u8array, Decipher,
+    hkdf, hkdf_hmac, pbkdf2, scrypt,
+    utils::{decrypt, encrypt, hash, hex_to_u8array, hmac, u8array_to_hex},
+    Cipher, CryptoErrno, Decipher, Hash, Hmac,
 };
 
 #[test]
@@ -162,6 +164,11 @@ fn test_hmac() {
             hmac("sha256", key, &[info]).map(u8array_to_hex),
             Ok(except.to_string())
         );
+        let mut h = Hmac::create("sha256", key).unwrap();
+        let half = info.len();
+        h.update(&info[..half]).unwrap();
+        h.update(&info[half..]).unwrap();
+        assert_eq!(h.digest().map(u8array_to_hex), Ok(except.to_string()));
     }
     assert_eq!(
         hmac(
@@ -261,6 +268,13 @@ fn test_hash() {
             hash(alg, &[data]).map(u8array_to_hex),
             Ok(except.to_string())
         );
+        let mut h = Hash::create(alg).unwrap();
+        let half = data.len();
+        h.update(&data[..half]).unwrap();
+        let mut h2 = h.copy().unwrap();
+        h.digest().unwrap();
+        h2.update(&data[half..]).unwrap();
+        assert_eq!(h2.digest().map(u8array_to_hex), Ok(except.to_string()));
     }
 }
 
@@ -303,7 +317,14 @@ fn test_cipher() {
             Ok((enc.to_string(), tag.to_string()))
         );
         assert_eq!(
-            decrypt(alg, key, iv, aad, hex_to_u8array(tag).unwrap(), hex_to_u8array(enc).unwrap()),
+            decrypt(
+                alg,
+                key,
+                iv,
+                aad,
+                hex_to_u8array(tag).unwrap(),
+                hex_to_u8array(enc).unwrap()
+            ),
             Ok(msg.as_bytes().to_vec())
         );
         assert_eq!(

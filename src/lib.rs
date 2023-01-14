@@ -1,4 +1,35 @@
-mod raw;
+//! `crypto-wasi` is subset of apis of nodejs's crypto module for wasm32-wasi,
+//! implemented in rust,
+//! powered by [WASI Cryptography APIs](https://github.com/WebAssembly/wasi-crypto).
+//! This library is developed and tested over [WasmEdge](https://github.com/WasmEdge/WasmEdge) runtime
+//!
+//! **Note:** The api of this library is **not completely consistent** with the api of nodejs.
+//!
+//! # Currently Subset Implemented
+//!
+//! - `createHash` (sha256, sha512, sha512-256)
+//! - `createHmac` (sha256, sha512)
+//! - `hkdf` (sha256, sha512)
+//! - `pbkdf2` (sha256, sha512)
+//! - `scrypt`
+//! - `createCipheriv` & `createDecipheriv` (aes-128-gcm, aes-256-gcm)
+//! 
+//! # Not Implemented
+//! - `createCipher` & `createDecipher`: 
+//! This function is semantically insecure for all supported ciphers and fatally flawed for ciphers in counter mode (such as CTR, GCM, or CCM).
+//! - `createSecretKey`: 
+//! In nodejs, `SecretKey` is just store the raw key data.
+//! In wasi-crypto, `SymmetricKey` is equivalent to `SecretKey`,
+//! which is also just store the raw key data in WasmEdge's implementation.
+//! But in wasi-crypto, each key is required to be bound to a kind of algorithms,
+//! which cause some complications when managing keys and reusing keys.
+//! So we're not going to implement `SecretKey`.
+
+/// Low-level binging to `wasi-crypto`
+pub mod raw;
+
+/// Some helpful tools and simpified api
+pub mod utils;
 
 pub type CryptoErrno = raw::CryptoErrno;
 
@@ -12,12 +43,33 @@ const NONE_KEY: raw::OptSymmetricKey = raw::OptSymmetricKey {
     u: raw::OptSymmetricKeyUnion { none: () },
 };
 
+/// Equivalent to `crypto.Hmac`
+///
+/// Example:
+/// 
+/// ```
+/// use crate::Hmac;
+/// 
+/// let mut h = Hmac::create("sha256", "key")?;
+/// h.update("abc")?;
+/// h.update("def")?;
+/// let res = h.digest()?;
+/// ```
 pub struct Hmac {
     handle: raw::SymmetricState,
 }
 
 impl Hmac {
-    pub fn create<T>(alg: &str, key: T) -> Result<Self, raw::CryptoErrno>
+    /// Equivalent to `createHmac`
+    ///
+    /// In nodejs, the `key` argument can pass a `KeyObject`.
+    /// While in nodejs, `SecretKey` is just store the raw key data.
+    /// In wasi-crypto, `SymmetricKey` is equivalent to `SecretKey`,
+    /// which is also just store the raw key data in WasmEdge's implementation.
+    /// But in wasi-crypto, each key is required to be bound to a kind of algorithms,
+    /// which cause some complications when managing keys and reusing keys.
+    /// So we're not going to implement `SecretKey`.
+    pub fn create<T>(alg: &str, key: T) -> Result<Self, CryptoErrno>
     where
         T: AsRef<[u8]>,
     {
@@ -42,12 +94,18 @@ impl Hmac {
         Ok(Self { handle })
     }
 
-    pub fn update(&mut self, data: impl AsRef<[u8]>) -> Result<(), raw::CryptoErrno> {
+    /// Updates the `Hmac` content with the given `data`.
+    /// This can be called many times with new data as it is streamed.
+    pub fn update(&mut self, data: impl AsRef<[u8]>) -> Result<(), CryptoErrno> {
         let data = data.as_ref();
         unsafe { raw::symmetric_state_absorb(self.handle, data.as_ptr(), data.len()) }
     }
 
-    pub fn digest(&mut self) -> Result<Vec<u8>, raw::CryptoErrno> {
+    /// Calculates the HMAC digest of all of the data passed using `update`.
+    /// The `Hmac` object SHOULD NOT be used again after `digest` has been called.
+    /// Unlike nodejs, you can still call `update` to append content and `digest` to compute for all content actually in WasmEdge's implementation,
+    /// but it's NOT RECOMMENDED.
+    pub fn digest(&mut self) -> Result<Vec<u8>, CryptoErrno> {
         unsafe {
             let tag = raw::symmetric_state_squeeze_tag(self.handle)?;
             let len = raw::symmetric_tag_len(tag)?;
@@ -58,7 +116,8 @@ impl Hmac {
         }
     }
 
-    pub fn digest_into(&mut self, mut buf: impl AsMut<[u8]>) -> Result<(), raw::CryptoErrno> {
+    /// As same as `digest` but directly write result to `buf`
+    pub fn digest_into(&mut self, mut buf: impl AsMut<[u8]>) -> Result<(), CryptoErrno> {
         let buf = buf.as_mut();
         unsafe {
             let tag = raw::symmetric_state_squeeze_tag(self.handle)?;
@@ -77,34 +136,64 @@ impl Drop for Hmac {
     }
 }
 
+/// Equivalent to `crypto.Hash`
+///
+/// Example:
+/// 
+/// ```
+/// use crate::Hash;
+/// 
+/// let mut h = Hash::create("sha256")?;
+/// h.update("abc")?;
+/// h.update("def")?;
+/// let res = h.digest()?;
+/// ```
 pub struct Hash {
     handle: raw::SymmetricState,
     hash_len: usize,
 }
 
 impl Hash {
-    pub fn create(alg: &str) -> Result<Self, raw::CryptoErrno> {
+    /// Equivalent to `createHash`
+    pub fn create(alg: &str) -> Result<Self, CryptoErrno> {
         let (alg, hash_len) = match alg {
             "sha256" | "SHA256" | "SHA-256" => ("SHA-256", 32),
             "sha512" | "SHA512" | "SHA-512" => ("SHA-512", 64),
+            "sha512-256" | "SHA512-256" | "SHA-512/256" => ("SHA-512/256", 32),
             _ => return Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
         };
         let handle = { unsafe { raw::symmetric_state_open(alg, NONE_KEY, NONE_OPTS)? } };
         Ok(Self { handle, hash_len })
     }
 
-    pub fn update(&mut self, data: impl AsRef<[u8]>) -> Result<(), raw::CryptoErrno> {
+    /// Updates the `Hash` content with the given `data`.
+    /// This can be called many times with new data as it is streamed.
+    pub fn update(&mut self, data: impl AsRef<[u8]>) -> Result<(), CryptoErrno> {
         let data = data.as_ref();
         unsafe { raw::symmetric_state_absorb(self.handle, data.as_ptr(), data.len()) }
     }
 
-    pub fn digest(&mut self) -> Result<Vec<u8>, raw::CryptoErrno> {
+    /// Creates a new `Hash` object that contains a deep copy of the internal state of the current `Hash` object.
+    pub fn copy(&self) -> Result<Self, CryptoErrno> {
+        let new_handle = unsafe { raw::symmetric_state_clone(self.handle) }?;
+        Ok(Self {
+            handle: new_handle,
+            hash_len: self.hash_len,
+        })
+    }
+
+    /// Calculates the HASH digest of all of the data passed using `update`.
+    /// The `Hash` object SHOULD NOT be used again after `digest` has been called.
+    /// Unlike nodejs, you can still call `update` to append content and `digest` to compute for all content actually in WasmEdge's implementation,
+    /// but it's NOT RECOMMENDED.
+    pub fn digest(&mut self) -> Result<Vec<u8>, CryptoErrno> {
         let mut out = vec![0; self.hash_len];
         self.digest_into(&mut out)?;
         Ok(out)
     }
 
-    pub fn digest_into(&mut self, mut buf: impl AsMut<[u8]>) -> Result<(), raw::CryptoErrno> {
+    /// As same as `digest` but directly write result to `buf`
+    pub fn digest_into(&mut self, mut buf: impl AsMut<[u8]>) -> Result<(), CryptoErrno> {
         let buf = buf.as_mut();
         unsafe {
             raw::symmetric_state_squeeze(self.handle, buf.as_mut_ptr(), buf.len())?;
@@ -121,45 +210,11 @@ impl Drop for Hash {
     }
 }
 
-/// Behaviour like
-///
-/// ```js
-/// let hmac = createHmac(alg, key);
-/// infos.forEach(info => hmac.update(info));
-/// let return = hmac.digest();
-/// ```
-pub fn hmac(
-    alg: &str,
-    key: impl AsRef<[u8]>,
-    infos: &[impl AsRef<[u8]>],
-) -> Result<Vec<u8>, raw::CryptoErrno> {
-    let mut hash = Hmac::create(alg, key)?;
-    for info in infos {
-        hash.update(info)?;
-    }
-    hash.digest()
-}
-
-/// Behaviour like
-///
-/// ```js
-/// let hash = createHash(alg);
-/// infos.forEach(info => hash.update(info));
-/// let return = hash.digest();
-/// ```
-pub fn hash(alg: &str, infos: &[impl AsRef<[u8]>]) -> Result<Vec<u8>, raw::CryptoErrno> {
-    let mut hash = Hash::create(alg)?;
-    for info in infos {
-        hash.update(info)?;
-    }
-    hash.digest()
-}
-
 fn hkdf_extract(
     alg: &str,
     key: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
-) -> Result<raw::SymmetricKey, raw::CryptoErrno> {
+) -> Result<raw::SymmetricKey, CryptoErrno> {
     let (extract_alg, expand_alg) = match alg {
         "sha256" | "SHA256" => ("HKDF-EXTRACT/SHA-256", "HKDF-EXPAND/SHA-256"),
         "sha512" | "SHA512" => ("HKDF-EXTRACT/SHA-512", "HKDF-EXPAND/SHA-512"),
@@ -185,7 +240,7 @@ fn hkdf_extract(
             Ok(expand_key)
         }
     } else {
-        let res = hmac(alg, salt, &[key])?;
+        let res = utils::hmac(alg, salt, &[key])?;
         unsafe { raw::symmetric_key_import(expand_alg, res.as_ptr(), res.len()) }
     }
 }
@@ -194,18 +249,20 @@ fn hkdf_extract_raw(
     alg: &str,
     key: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
-) -> Result<Vec<u8>, raw::CryptoErrno> {
-    hmac(alg, salt, &[key])
+) -> Result<Vec<u8>, CryptoErrno> {
+    utils::hmac(alg, salt, &[key])
 }
 
 /// As same as `hkdf`, but use hmac to manual expand
+///
+/// See [https://github.com/WasmEdge/WasmEdge/issues/2176](https://github.com/WasmEdge/WasmEdge/issues/2176)
 pub fn hkdf_hmac(
     alg: &str,
     key: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
     info: impl AsRef<[u8]>,
     key_len: usize,
-) -> Result<Vec<u8>, raw::CryptoErrno> {
+) -> Result<Vec<u8>, CryptoErrno> {
     let key = key.as_ref();
     let salt = salt.as_ref();
     let info = info.as_ref();
@@ -219,20 +276,25 @@ pub fn hkdf_hmac(
     let mut last = [].as_slice();
     for (idx, chunk) in out.chunks_mut(hash_len).enumerate() {
         let counter = [idx as u8 + 1];
-        chunk.clone_from_slice(&hmac(alg, &expand_key, &[last, info, &counter])?[..chunk.len()]);
+        chunk.clone_from_slice(
+            &utils::hmac(alg, &expand_key, &[last, info, &counter])?[..chunk.len()],
+        );
         last = chunk;
     }
     Ok(out)
 }
 
-/// Behaviour like `crypto.hkdfSync`
+/// Equivalent to `crypto.hkdfSync`
+///
+/// If you don't set `key_len` to 32 for `sha256` or 64 for `sha512` and get `WASI_CRYPTO_ERRNO_ALGORITHM_FAILURE` error,
+/// please use `hkdf_hmac` instead.  
 pub fn hkdf(
     alg: &str,
     key: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
     info: impl AsRef<[u8]>,
     key_len: usize,
-) -> Result<Vec<u8>, raw::CryptoErrno> {
+) -> Result<Vec<u8>, CryptoErrno> {
     let key = key.as_ref();
     let salt = salt.as_ref();
     let info = info.as_ref();
@@ -260,14 +322,14 @@ pub fn hkdf(
     Ok(out)
 }
 
-/// Behaviour like `crypto.pbkdf2Sync`
+/// Equivalent to `crypto.pbkdf2Sync`
 pub fn pbkdf2(
     alg: &str,
     password: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
     iters: usize,
     key_len: usize,
-) -> Result<Vec<u8>, raw::CryptoErrno> {
+) -> Result<Vec<u8>, CryptoErrno> {
     let hash_len = match alg {
         "sha256" | "SHA256" | "HMAC/SHA-256" => 32,
         "sha512" | "SHA512" | "HMAC/SHA-512" => 64,
@@ -281,10 +343,10 @@ pub fn pbkdf2(
         salt_2.push(((idx >> 16) & 0xff) as u8);
         salt_2.push(((idx >> 8) & 0xff) as u8);
         salt_2.push(((idx) & 0xff) as u8);
-        let mut res_t = hmac(alg, password.as_ref(), &[&salt_2])?;
+        let mut res_t = utils::hmac(alg, password.as_ref(), &[&salt_2])?;
         let mut res_u = res_t.clone();
         for _ in 0..iters - 1 {
-            res_u = hmac(alg, password.as_ref(), &[&res_u])?;
+            res_u = utils::hmac(alg, password.as_ref(), &[&res_u])?;
             for k in 0..res_t.len() {
                 res_t[k] ^= res_u[k];
             }
@@ -438,7 +500,7 @@ fn scrypt_rom(b: &[u8], r: usize, n: usize, p: usize) -> Vec<u8> {
     rom.b
 }
 
-/// Behaviour like `crypto.scryptSync`
+/// Equivalent to `crypto.scryptSync`
 pub fn scrypt(
     password: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
@@ -446,7 +508,7 @@ pub fn scrypt(
     r: usize,
     p: usize,
     keylen: usize,
-) -> Result<Vec<u8>, raw::CryptoErrno> {
+) -> Result<Vec<u8>, CryptoErrno> {
     let blen = p * 128 * r;
     let b = pbkdf2("HMAC/SHA-256", &password, salt, 1, blen)?;
     let s = scrypt_rom(&b, r, n, p);
@@ -454,57 +516,22 @@ pub fn scrypt(
     Ok(f)
 }
 
-/// Convert u8 array to hex string,
-/// behaviour like `Buffer.from(arr).toString("hex")`
+/// Equivalent to `crypto.Cipher`
+/// 
+/// `cipher.setAutoPadding` is unsupported current.
+/// 
+/// Example:
 ///
-/// # Examples
-///
+/// ```rust
+/// use crate::Cipher;
+/// 
+/// let mut c = Cipher::create(alg, key, iv)?;
+/// c.set_aad(aad)?; // optional
+/// c.update(msg1)?;
+/// c.update(msg2)?;
+/// let res = c.fin()?;
+/// let auth_tag = c.get_auth_tag()?;
 /// ```
-/// use crypto_wasi::u8array_to_hex;
-///
-/// assert_eq!(u8array_to_hex([01, 23, 45]), "01172d".to_string());
-/// ```
-pub fn u8array_to_hex(arr: impl AsRef<[u8]>) -> String {
-    arr.as_ref()
-        .iter()
-        .map(|v| format!("{:02x}", v))
-        .collect::<Vec<_>>()
-        .join("")
-}
-
-/// Convert hex string to u8 array
-///
-/// # Examples
-///
-/// ```
-/// use crypto_wasi::hex_to_u8array;
-///
-/// assert_eq!(hex_to_u8array("01172d"), Some(vec![01, 23, 45]));
-/// ```
-pub fn hex_to_u8array(arr: &str) -> Option<Vec<u8>> {
-    if arr.len() % 2 != 0 || arr.chars().any(|v| !v.is_ascii_hexdigit()) {
-        return None;
-    }
-
-    fn hex_byte_to_u8(h: u8) -> u8 {
-        match h {
-            b'0'..=b'9' => h - b'0',
-            b'a'..=b'f' => 10 + h - b'a',
-            b'A'..=b'F' => 10 + h - b'A',
-            _ => unreachable!()
-        }
-    }
-
-    Some(
-        arr.as_bytes()
-            .chunks(2)
-            .map(|v| {
-                (hex_byte_to_u8(v[0]) << 4) + hex_byte_to_u8(v[1])
-            })
-            .collect(),
-    )
-}
-
 pub struct Cipher {
     handle: raw::SymmetricState,
     message: Vec<u8>,
@@ -512,11 +539,15 @@ pub struct Cipher {
 }
 
 impl Cipher {
+    /// Equivalent to `createCipheriv`
+    /// 
+    /// For `AES-128-GCM` key should be 16 bytes and iv should be 12 bytes.
+    /// For `AES-256-GCM` key should be 32 bytes and iv should be 12 bytes.
     pub fn create(
         alg: &str,
         key: impl AsRef<[u8]>,
         iv: impl AsRef<[u8]>,
-    ) -> Result<Self, raw::CryptoErrno> {
+    ) -> Result<Self, CryptoErrno> {
         let alg = match alg {
             "aes-128-gcm" | "AES-128-GCM" => "AES-128-GCM",
             "aes-256-gcm" | "AES-256-GCM" => "AES-256-GCM",
@@ -549,21 +580,23 @@ impl Cipher {
         })
     }
 
-    pub fn set_aad(&mut self, data: impl AsRef<[u8]>) -> Result<(), raw::CryptoErrno> {
+    /// Sets the value used for the additional authenticated data (AAD) input parameter.
+    /// The `set_add` method must be called before `update`.
+    pub fn set_aad(&mut self, data: impl AsRef<[u8]>) -> Result<(), CryptoErrno> {
         let data = data.as_ref();
         unsafe { raw::symmetric_state_absorb(self.handle, data.as_ptr(), data.len()) }
     }
 
     /// in WasmEdge implement of wasi-crypto, `encrypt` can't be called multiple times,
     /// multiple call `encrypt` is also not equivalent to multiple call `update`.
-    /// so we store all message and concat it, then encrypt one-time on `final`
-    pub fn update(&mut self, data: impl AsRef<[u8]>) -> Result<(), raw::CryptoErrno> {
+    /// so we store all message and concat it, then encrypt one-time on `fin`
+    pub fn update(&mut self, data: impl AsRef<[u8]>) -> Result<(), CryptoErrno> {
         self.message.extend_from_slice(data.as_ref());
         Ok(())
     }
 
     /// `final` is reserved keyword, `fin` looks better than `r#final`
-    pub fn fin(&mut self) -> Result<Vec<u8>, raw::CryptoErrno> {
+    pub fn fin(&mut self) -> Result<Vec<u8>, CryptoErrno> {
         let mut out = vec![0; self.message.len()];
         unsafe {
             let tag = raw::symmetric_state_encrypt_detached(
@@ -582,8 +615,8 @@ impl Cipher {
         Ok(out)
     }
 
-    /// equivalent to `update(data)` then `final`
-    pub fn encrypt(&mut self, data: impl AsRef<[u8]>) -> Result<Vec<u8>, raw::CryptoErrno> {
+    /// Equivalent to `update(data)` then `fin`, but no need to restore data in struct internal.
+    pub fn encrypt(&mut self, data: impl AsRef<[u8]>) -> Result<Vec<u8>, CryptoErrno> {
         let data = data.as_ref();
         let mut out = vec![0; data.len()];
         unsafe {
@@ -603,11 +636,13 @@ impl Cipher {
         Ok(out)
     }
 
-    pub fn get_auth_tag(&self) -> Result<&Vec<u8>, raw::CryptoErrno> {
+    /// The `get_auth_tag` method should only be called after encryption has been completed using the `fin` method.
+    pub fn get_auth_tag(&self) -> Result<&Vec<u8>, CryptoErrno> {
         self.tag.as_ref().ok_or(raw::CRYPTO_ERRNO_INVALID_OPERATION)
     }
 
-    pub fn take_auth_tag(&mut self) -> Result<Vec<u8>, raw::CryptoErrno> {
+    /// As same as `get_auth_tag`, but get the ownership of `auth_tag` stored in struct internal.
+    pub fn take_auth_tag(&mut self) -> Result<Vec<u8>, CryptoErrno> {
         self.tag.take().ok_or(raw::CRYPTO_ERRNO_INVALID_OPERATION)
     }
 }
@@ -620,20 +655,16 @@ impl Drop for Cipher {
     }
 }
 
-pub fn encrypt(
-    alg: &str,
-    key: impl AsRef<[u8]>,
-    iv: impl AsRef<[u8]>,
-    aad: impl AsRef<[u8]>,
-    msg: impl AsRef<[u8]>,
-) -> Result<(Vec<u8>, Vec<u8>), raw::CryptoErrno> {
-    let mut c = Cipher::create(alg, key, iv)?;
-    c.set_aad(aad)?;
-    let out = c.encrypt(msg)?;
-    let tag = c.take_auth_tag()?;
-    Ok((out, tag))
-}
-
+/// Equivalent to `crypto.Decipher`
+///
+/// Example:
+///
+/// ```rust
+/// let mut d = Decipher::create(alg, key, iv)?;
+/// d.set_aad(aad)?; // optional
+/// d.set_auth_tag(auth_tag)?;
+/// let src = d.decrypt(msg)?;
+/// ```
 pub struct Decipher {
     handle: raw::SymmetricState,
     message: Vec<u8>,
@@ -641,11 +672,15 @@ pub struct Decipher {
 }
 
 impl Decipher {
+    /// Equivalent to `createDecipheriv`
+    /// 
+    /// For `AES-128-GCM` key should be 16 bytes and iv should be 12 bytes.
+    /// For `AES-256-GCM` key should be 32 bytes and iv should be 12 bytes.
     pub fn create(
         alg: &str,
         key: impl AsRef<[u8]>,
         iv: impl AsRef<[u8]>,
-    ) -> Result<Self, raw::CryptoErrno> {
+    ) -> Result<Self, CryptoErrno> {
         let alg = match alg {
             "aes-128-gcm" | "AES-128-GCM" => "AES-128-GCM",
             "aes-256-gcm" | "AES-256-GCM" => "AES-256-GCM",
@@ -678,21 +713,23 @@ impl Decipher {
         })
     }
 
-    pub fn set_aad(&mut self, data: impl AsRef<[u8]>) -> Result<(), raw::CryptoErrno> {
+    /// Sets the value used for the additional authenticated data (AAD) input parameter.
+    /// The `set_add` method must be called before `update`.
+    pub fn set_aad(&mut self, data: impl AsRef<[u8]>) -> Result<(), CryptoErrno> {
         let data = data.as_ref();
         unsafe { raw::symmetric_state_absorb(self.handle, data.as_ptr(), data.len()) }
     }
 
-    /// in WasmEdge implement of wasi-crypto, `decrypt` can't be called multiple times,
+    /// In WasmEdge implementation of wasi-crypto, `decrypt` can't be called multiple times,
     /// multiple call `decrypt` is also not equivalent to multiple call `update`.
     /// so we store all message and concat it, then decrypt one-time on `final`
-    pub fn update(&mut self, data: impl AsRef<[u8]>) -> Result<(), raw::CryptoErrno> {
+    pub fn update(&mut self, data: impl AsRef<[u8]>) -> Result<(), CryptoErrno> {
         self.message.extend_from_slice(data.as_ref());
         Ok(())
     }
 
     /// `final` is reserved keyword, `fin` looks better than `r#final`
-    pub fn fin(&mut self) -> Result<Vec<u8>, raw::CryptoErrno> {
+    pub fn fin(&mut self) -> Result<Vec<u8>, CryptoErrno> {
         if let Some(tag) = &self.tag {
             let mut out = vec![0; self.message.len()];
             unsafe {
@@ -712,8 +749,8 @@ impl Decipher {
         }
     }
 
-    /// equivalent to `update(data)` then `final`
-    pub fn decrypt(&mut self, data: impl AsRef<[u8]>) -> Result<Vec<u8>, raw::CryptoErrno> {
+    /// Equivalent to `update(data)` then `fin`, but no need to restore data in struct internal.
+    pub fn decrypt(&mut self, data: impl AsRef<[u8]>) -> Result<Vec<u8>, CryptoErrno> {
         let data = data.as_ref();
         if let Some(tag) = &self.tag {
             let mut out = vec![0; data.len()];
@@ -734,7 +771,9 @@ impl Decipher {
         }
     }
 
-    pub fn set_auth_tag(&mut self, data: impl AsRef<[u8]>) -> Result<(), raw::CryptoErrno> {
+    /// When using an authenticated encryption mode (GCM are currently supported), the `set_auth_tag` method is used to pass in the received authentication tag.
+    /// The `set_auth_tag` method must be called before `fin` for GCM modes.
+    pub fn set_auth_tag(&mut self, data: impl AsRef<[u8]>) -> Result<(), CryptoErrno> {
         self.tag = Some(data.as_ref().to_vec());
         Ok(())
     }
@@ -746,18 +785,4 @@ impl Drop for Decipher {
             raw::symmetric_state_close(self.handle).unwrap();
         }
     }
-}
-
-pub fn decrypt(
-    alg: &str,
-    key: impl AsRef<[u8]>,
-    iv: impl AsRef<[u8]>,
-    aad: impl AsRef<[u8]>,
-    auth_tag: impl AsRef<[u8]>,
-    msg: impl AsRef<[u8]>,
-) -> Result<Vec<u8>, raw::CryptoErrno> {
-    let mut c = Decipher::create(alg, key, iv)?;
-    c.set_aad(aad)?;
-    c.set_auth_tag(auth_tag)?;
-    c.decrypt(msg)
 }
