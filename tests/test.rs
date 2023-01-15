@@ -129,7 +129,7 @@ fn test_pbkdf2() {
     ];
     for (password, salt, iters, key_len, except) in cases {
         assert_eq!(
-            pbkdf2("sha256", password, salt, iters, key_len).map(u8array_to_hex),
+            pbkdf2(password, salt, iters, key_len, "sha256").map(u8array_to_hex),
             Ok(except.to_string())
         );
     }

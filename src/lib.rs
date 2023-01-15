@@ -12,12 +12,12 @@
 //! - `hkdf` (sha256, sha512)
 //! - `pbkdf2` (sha256, sha512)
 //! - `scrypt`
-//! - `createCipheriv` & `createDecipheriv` (aes-128-gcm, aes-256-gcm)
-//! 
+//! - `createCipheriv` & `createDecipheriv` (aes-128-gcm, aes-256-gcm, chacha20-poly1305)
+//!
 //! # Not Implemented
-//! - `createCipher` & `createDecipher`: 
+//! - `createCipher` & `createDecipher`:
 //! This function is semantically insecure for all supported ciphers and fatally flawed for ciphers in counter mode (such as CTR, GCM, or CCM).
-//! - `createSecretKey`: 
+//! - `createSecretKey`:
 //! In nodejs, `SecretKey` is just store the raw key data.
 //! In wasi-crypto, `SymmetricKey` is equivalent to `SecretKey`,
 //! which is also just store the raw key data in WasmEdge's implementation.
@@ -25,7 +25,7 @@
 //! which cause some complications when managing keys and reusing keys.
 //! So we're not going to implement `SecretKey`.
 
-/// Low-level binging to `wasi-crypto`
+/// Low-level binding to `wasi-crypto`
 pub mod raw;
 
 /// Some helpful tools and simpified api
@@ -46,10 +46,10 @@ const NONE_KEY: raw::OptSymmetricKey = raw::OptSymmetricKey {
 /// Equivalent to `crypto.Hmac`
 ///
 /// Example:
-/// 
+///
 /// ```
 /// use crate::Hmac;
-/// 
+///
 /// let mut h = Hmac::create("sha256", "key")?;
 /// h.update("abc")?;
 /// h.update("def")?;
@@ -136,13 +136,18 @@ impl Drop for Hmac {
     }
 }
 
+/// Creates and returns an `Hmac` object that uses the given algorithm and key.
+pub fn create_hmac(alg: &str, key: impl AsRef<[u8]>) -> Result<Hmac, CryptoErrno> {
+    Hmac::create(alg, key)
+}
+
 /// Equivalent to `crypto.Hash`
 ///
 /// Example:
-/// 
+///
 /// ```
 /// use crate::Hash;
-/// 
+///
 /// let mut h = Hash::create("sha256")?;
 /// h.update("abc")?;
 /// h.update("def")?;
@@ -208,6 +213,17 @@ impl Drop for Hash {
             raw::symmetric_state_close(self.handle).unwrap();
         }
     }
+}
+
+impl Clone for Hash {
+    fn clone(&self) -> Self {
+        self.copy().unwrap()
+    }
+}
+
+/// Creates and returns a `Hash` object that can be used to generate hash digests using the given algorithm.
+pub fn create_hash(alg: &str) -> Result<Hash, CryptoErrno> {
+    Hash::create(alg)
 }
 
 fn hkdf_extract(
@@ -284,18 +300,18 @@ pub fn hkdf_hmac(
     Ok(out)
 }
 
-/// Equivalent to `crypto.hkdfSync`
+/// HKDF is a simple key derivation function defined in RFC 5869.
 ///
 /// If you don't set `key_len` to 32 for `sha256` or 64 for `sha512` and get `WASI_CRYPTO_ERRNO_ALGORITHM_FAILURE` error,
 /// please use `hkdf_hmac` instead.  
 pub fn hkdf(
     alg: &str,
-    key: impl AsRef<[u8]>,
+    ikm: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
     info: impl AsRef<[u8]>,
     key_len: usize,
 ) -> Result<Vec<u8>, CryptoErrno> {
-    let key = key.as_ref();
+    let key = ikm.as_ref();
     let salt = salt.as_ref();
     let info = info.as_ref();
     let (_, expand_alg) = match alg {
@@ -322,15 +338,28 @@ pub fn hkdf(
     Ok(out)
 }
 
-/// Equivalent to `crypto.pbkdf2Sync`
+/// Password-Based Key Derivation Function 2 (PBKDF2) implementation.
+///
+/// A selected HMAC digest algorithm specified by `digest` is applied to derive a key of the requested byte length (`key_len`) from the `password`, `salt` and `iterations`.
+/// The `iterations` argument must be a number set as high as possible.
+/// The higher the number of iterations,
+/// the more secure the derived key will be,
+/// but will take a longer amount of time to complete.
+///
+/// The `salt` should be as unique as possible.
+/// It is recommended that a salt is random and at least 16 bytes long.
+/// See [NIST SP 800-132](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-132.pdf) for details.
+///
+/// When passing strings for `password` or `salt`,
+/// please consider [caveats when using strings as inputs to cryptographic APIs](https://nodejs.org/api/crypto.html#using-strings-as-inputs-to-cryptographic-apis).
 pub fn pbkdf2(
-    alg: &str,
     password: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
-    iters: usize,
+    iterations: usize,
     key_len: usize,
+    digest: &str,
 ) -> Result<Vec<u8>, CryptoErrno> {
-    let hash_len = match alg {
+    let hash_len = match digest {
         "sha256" | "SHA256" | "HMAC/SHA-256" => 32,
         "sha512" | "SHA512" | "HMAC/SHA-512" => 64,
         _ => return Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
@@ -343,10 +372,10 @@ pub fn pbkdf2(
         salt_2.push(((idx >> 16) & 0xff) as u8);
         salt_2.push(((idx >> 8) & 0xff) as u8);
         salt_2.push(((idx) & 0xff) as u8);
-        let mut res_t = utils::hmac(alg, password.as_ref(), &[&salt_2])?;
+        let mut res_t = utils::hmac(digest, password.as_ref(), &[&salt_2])?;
         let mut res_u = res_t.clone();
-        for _ in 0..iters - 1 {
-            res_u = utils::hmac(alg, password.as_ref(), &[&res_u])?;
+        for _ in 0..iterations - 1 {
+            res_u = utils::hmac(digest, password.as_ref(), &[&res_u])?;
             for k in 0..res_t.len() {
                 res_t[k] ^= res_u[k];
             }
@@ -500,7 +529,16 @@ fn scrypt_rom(b: &[u8], r: usize, n: usize, p: usize) -> Vec<u8> {
     rom.b
 }
 
-/// Equivalent to `crypto.scryptSync`
+/// Provides a synchronous [scrypt](https://en.wikipedia.org/wiki/Scrypt) implementation.
+/// 
+/// Scrypt is a password-based key derivation function that is designed to be expensive computationally and memory-wise in order to make brute-force attacks unrewarding.
+/// 
+/// The `salt` should be as unique as possible. 
+/// It is recommended that a salt is random and at least 16 bytes long. 
+/// See [NIST SP 800-132](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-132.pdf) for details.
+/// 
+/// When passing strings for `password` or `salt`, 
+/// please consider [caveats when using strings as inputs to cryptographic APIs](https://nodejs.org/api/crypto.html#using-strings-as-inputs-to-cryptographic-apis).
 pub fn scrypt(
     password: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,
@@ -510,21 +548,21 @@ pub fn scrypt(
     keylen: usize,
 ) -> Result<Vec<u8>, CryptoErrno> {
     let blen = p * 128 * r;
-    let b = pbkdf2("HMAC/SHA-256", &password, salt, 1, blen)?;
+    let b = pbkdf2(&password, salt, 1, blen, "HMAC/SHA-256")?;
     let s = scrypt_rom(&b, r, n, p);
-    let f = pbkdf2("HMAC/SHA-256", &password, &s, 1, keylen)?;
+    let f = pbkdf2(&password, &s, 1, keylen, "HMAC/SHA-256")?;
     Ok(f)
 }
 
 /// Equivalent to `crypto.Cipher`
-/// 
+///
 /// `cipher.setAutoPadding` is unsupported current.
-/// 
+///
 /// Example:
 ///
 /// ```rust
 /// use crate::Cipher;
-/// 
+///
 /// let mut c = Cipher::create(alg, key, iv)?;
 /// c.set_aad(aad)?; // optional
 /// c.update(msg1)?;
@@ -540,9 +578,10 @@ pub struct Cipher {
 
 impl Cipher {
     /// Equivalent to `createCipheriv`
-    /// 
+    ///
     /// For `AES-128-GCM` key should be 16 bytes and iv should be 12 bytes.
     /// For `AES-256-GCM` key should be 32 bytes and iv should be 12 bytes.
+    /// For `CHACHA20-POLY1305` key should be 32 bytes and iv should be 12 bytes.
     pub fn create(
         alg: &str,
         key: impl AsRef<[u8]>,
@@ -551,6 +590,7 @@ impl Cipher {
         let alg = match alg {
             "aes-128-gcm" | "AES-128-GCM" => "AES-128-GCM",
             "aes-256-gcm" | "AES-256-GCM" => "AES-256-GCM",
+            "chacha20-poly1305" | "CHACHA20-POLY1305" => "CHACHA20-POLY1305",
             _ => return Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
         };
         let handle = {
@@ -568,8 +608,8 @@ impl Cipher {
                     tag: raw::OPT_OPTIONS_U_SOME.raw(),
                     u: raw::OptOptionsUnion { some: opt },
                 };
-                let state = raw::symmetric_state_open(alg, key, opts).unwrap();
-                raw::symmetric_key_close(raw_key).unwrap();
+                let state = raw::symmetric_state_open(alg, key, opts)?;
+                raw::symmetric_key_close(raw_key)?;
                 state
             }
         };
@@ -673,9 +713,10 @@ pub struct Decipher {
 
 impl Decipher {
     /// Equivalent to `createDecipheriv`
-    /// 
+    ///
     /// For `AES-128-GCM` key should be 16 bytes and iv should be 12 bytes.
     /// For `AES-256-GCM` key should be 32 bytes and iv should be 12 bytes.
+    /// For `CHACHA20-POLY1305` key should be 32 bytes and iv should be 12 bytes.
     pub fn create(
         alg: &str,
         key: impl AsRef<[u8]>,
@@ -684,6 +725,7 @@ impl Decipher {
         let alg = match alg {
             "aes-128-gcm" | "AES-128-GCM" => "AES-128-GCM",
             "aes-256-gcm" | "AES-256-GCM" => "AES-256-GCM",
+            "chacha20-poly1305" | "CHACHA20-POLY1305" => "CHACHA20-POLY1305",
             _ => return Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
         };
         let handle = {
@@ -701,8 +743,8 @@ impl Decipher {
                     tag: raw::OPT_OPTIONS_U_SOME.raw(),
                     u: raw::OptOptionsUnion { some: opt },
                 };
-                let state = raw::symmetric_state_open(alg, key, opts).unwrap();
-                raw::symmetric_key_close(raw_key).unwrap();
+                let state = raw::symmetric_state_open(alg, key, opts)?;
+                raw::symmetric_key_close(raw_key)?;
                 state
             }
         };
@@ -784,5 +826,33 @@ impl Drop for Decipher {
         unsafe {
             raw::symmetric_state_close(self.handle).unwrap();
         }
+    }
+}
+
+pub struct PublicKey {
+    handle: raw::Publickey
+}
+
+impl PublicKey {
+    pub fn export(kind: &str, format: &str) -> Result<Vec<u8>, CryptoErrno> {
+        // for ecdsa support bin-spki, pem-spki, bin-sec
+        // for eddsa support bin-raw
+        matches!(kind, "spki");
+        matches!(format, "pem" | "der");
+        todo!()
+    }
+}
+
+pub struct SecretKey {
+    handle: raw::Secretkey
+}
+
+impl SecretKey {
+    pub fn export(kind: &str, format: &str, cipher: &str, passphrase: impl AsRef<[u8]>) -> Result<Vec<u8>, CryptoErrno> {
+        // for ecdsa support bin-pkcs8, pem-pkcs8, bin-raw
+        // for eddsa support bin-raw
+        matches!(kind, "pkcs8" | "sec1");
+        matches!(format, "pem" | "der");
+        todo!()
     }
 }
