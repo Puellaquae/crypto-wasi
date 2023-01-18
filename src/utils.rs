@@ -69,7 +69,7 @@ pub fn encrypt(
 }
 
 /// Convert u8 array to hex string
-/// 
+///
 /// Equivalent to `Buffer.from(arr).toString("hex")`
 ///
 /// # Examples
