@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  WASMEDGE_VERSION: "0.12.1"
 
 jobs:
   test:
@@ -22,14 +23,14 @@ jobs:
       run: cargo build --verbose
     - name: Test on WasmEdge
       run: |
-        wget https://github.com/WasmEdge/WasmEdge/releases/download/0.11.2/WasmEdge-0.11.2-manylinux2014_x86_64.tar.gz
-        tar -zxf WasmEdge-0.11.2-manylinux2014_x86_64.tar.gz
-        wget https://github.com/WasmEdge/WasmEdge/releases/download/0.11.2/WasmEdge-plugin-wasi_crypto-0.11.2-manylinux2014_x86_64.tar.gz
-        tar -zxf WasmEdge-plugin-wasi_crypto-0.11.2-manylinux2014_x86_64.tar.gz
-        mkdir -p WasmEdge-0.11.2-Linux/lib/wasmedge/
-        cp libwasmedgePluginWasiCrypto.so WasmEdge-0.11.2-Linux/lib/wasmedge/
-        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(pwd)/WasmEdge-0.11.2-Linux/lib
-        export PATH=$PATH:$(pwd)/WasmEdge-0.11.2-Linux/bin
-        export WASMEDGE_PLUGIN_PATH=$(pwd)/WasmEdge-0.11.2-Linux/lib/wasmedge
+        wget https://github.com/WasmEdge/WasmEdge/releases/download/$WASMEDGE_VERSION/WasmEdge-$WASMEDGE_VERSION-manylinux2014_x86_64.tar.gz
+        tar -zxf WasmEdge-$WASMEDGE_VERSION-manylinux2014_x86_64.tar.gz
+        wget https://github.com/WasmEdge/WasmEdge/releases/download/$WASMEDGE_VERSION/WasmEdge-plugin-wasi_crypto-$WASMEDGE_VERSION-manylinux2014_x86_64.tar.gz
+        tar -zxf WasmEdge-plugin-wasi_crypto-$WASMEDGE_VERSION-manylinux2014_x86_64.tar.gz
+        mkdir -p WasmEdge-$WASMEDGE_VERSION-Linux/lib/wasmedge/
+        cp libwasmedgePluginWasiCrypto.so WasmEdge-$WASMEDGE_VERSION-Linux/lib/wasmedge/
+        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(pwd)/WasmEdge-$WASMEDGE_VERSION-Linux/lib
+        export PATH=$PATH:$(pwd)/WasmEdge-$WASMEDGE_VERSION-Linux/bin
+        export WASMEDGE_PLUGIN_PATH=$(pwd)/WasmEdge-$WASMEDGE_VERSION-Linux/lib/wasmedge
         wasmedge -v
         cargo test --release --verbose
