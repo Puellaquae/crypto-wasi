@@ -39,12 +39,10 @@ fn test_hkdf() {
         "eb70f01dede9afafa449eee1b1286504e1f62388b3f7dd4f956697b0e828fe181e59c2ec0fe6e7e7ac2613b6ab65342a",
     )];
     for (digest, key, salt, info, key_len, execpt) in cases256 {
-        if key_len == 32 {
-            assert_eq!(
-                hkdf(digest, key, salt, info, key_len).map(u8array_to_hex),
-                Ok(execpt.to_string())
-            );
-        }
+        assert_eq!(
+            hkdf(digest, key, salt, info, key_len).map(u8array_to_hex),
+            Ok(execpt.to_string())
+        );
         assert_eq!(
             hkdf_hmac(digest, key, salt, info, key_len).map(u8array_to_hex),
             Ok(execpt.to_string())
