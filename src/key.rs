@@ -17,6 +17,7 @@ enum CurveKind {
 const OID_CURVE_PRIME256V1: &'static str = "1.2.840.10045.3.1.7";
 const OID_CURVE_SECP256K1: &'static str = "1.3.132.0.10";
 const OID_CURVE_SECP384R1: &'static str = "1.3.132.0.34";
+const OID_ED25519: &'static str = "1.3.101.112";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AlgoKind {
@@ -109,7 +110,26 @@ impl PublicKey {
                 KeyEncodingFormat::Der,
             ) => publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8),
             (AlgoKind::Rsa(_), PublicKeyEncodingType::Pkcs1, _) => todo!(),
-            (AlgoKind::Ed, PublicKeyEncodingType::Spki, _) => todo!(),
+            (AlgoKind::Ed, PublicKeyEncodingType::Spki, _) => {
+                let raw = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_RAW)?;
+                let spki = SubjectPublicKeyInfo {
+                    algorithm: AlgorithmIdentifier {
+                        algorithm: ObjectIdentifier::new(OID_ED25519).unwrap(),
+                        parameters: None,
+                    },
+                    subject_public_key: BitStringRef::new(0, &raw).unwrap(),
+                };
+                let der = spki.to_vec().unwrap();
+                match format {
+                    KeyEncodingFormat::Der => Ok(der),
+                    KeyEncodingFormat::Pem => Ok(pem::encode(&pem::Pem {
+                        tag: "PUBLIC KEY".to_string(),
+                        contents: der,
+                    })
+                    .into_bytes()),
+                    KeyEncodingFormat::Jwk => todo!(),
+                }
+            }
             (AlgoKind::Ec(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Jwk) => todo!(),
             (AlgoKind::Rsa(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Jwk) => todo!(),
             (AlgoKind::RsaPss(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Jwk) => todo!(),
