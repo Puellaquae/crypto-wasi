@@ -1,4 +1,5 @@
 use crate::{raw, CryptoErrno, NONE_OPTS};
+use base64::{engine::general_purpose::URL_SAFE, engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum KeyEncodingFormat {
@@ -109,8 +110,28 @@ impl PublicKey {
                 PublicKeyEncodingType::Spki,
                 KeyEncodingFormat::Der,
             ) => publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8),
-            (AlgoKind::Rsa(_), PublicKeyEncodingType::Pkcs1, _) => todo!(),
-            (AlgoKind::Ed, PublicKeyEncodingType::Spki, _) => {
+            (AlgoKind::Ec(_), _, KeyEncodingFormat::Jwk) => todo!(),
+            (AlgoKind::Rsa(_), _, KeyEncodingFormat::Jwk) => {
+                let der = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8)?;
+                let raw = SubjectPublicKeyInfo::from_der(&der)
+                    .unwrap()
+                    .subject_public_key
+                    .as_bytes()
+                    .unwrap();
+                let rsa_pk = RsaPublicKey::from_der(raw).unwrap();
+                let n = URL_SAFE_NO_PAD.encode(rsa_pk.modulus.as_bytes());
+                let e = URL_SAFE_NO_PAD.encode(rsa_pk.public_exponent.as_bytes());
+                let jwk = format!(r#"{{"n":"{n}","e":"{e}","kty":"RSA"}}"#);
+                Ok(jwk.into_bytes())
+            }
+            (AlgoKind::RsaPss(_), _, KeyEncodingFormat::Jwk) => {
+                Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING)
+            }
+            (
+                AlgoKind::Ed,
+                PublicKeyEncodingType::Spki,
+                KeyEncodingFormat::Der | KeyEncodingFormat::Pem,
+            ) => {
                 let raw = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_RAW)?;
                 let spki = SubjectPublicKeyInfo {
                     algorithm: AlgorithmIdentifier {
@@ -119,7 +140,7 @@ impl PublicKey {
                     },
                     subject_public_key: BitStringRef::new(0, &raw).unwrap(),
                 };
-                let der = spki.to_vec().unwrap();
+                let der = spki.to_der().unwrap();
                 match format {
                     KeyEncodingFormat::Der => Ok(der),
                     KeyEncodingFormat::Pem => Ok(pem::encode(&pem::Pem {
@@ -127,13 +148,17 @@ impl PublicKey {
                         contents: der,
                     })
                     .into_bytes()),
-                    KeyEncodingFormat::Jwk => todo!(),
+                    KeyEncodingFormat::Jwk => unreachable!(),
                 }
             }
-            (AlgoKind::Ec(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Jwk) => todo!(),
-            (AlgoKind::Rsa(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Jwk) => todo!(),
-            (AlgoKind::RsaPss(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Jwk) => todo!(),
-            _ => Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING),
+            (AlgoKind::Ed, _, KeyEncodingFormat::Jwk) => {
+                let raw = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_RAW)?;
+                let x = URL_SAFE.encode(raw);
+                let jwk = format!(r#"{{"crv":"Ed25519","x":"{x}","kty":"OKP"}}"#);
+                Ok(jwk.into_bytes())
+            }
+            (AlgoKind::Rsa(_), PublicKeyEncodingType::Pkcs1, _) => todo!(),
+            (_, PublicKeyEncodingType::Pkcs1, _) => Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING),
         }
     }
 }
@@ -201,7 +226,7 @@ impl PrivateKey {
                     parameters: Some(EcParameters::NamedCurve(curve.parse().unwrap())),
                     public_key: Some(&pk_data),
                 };
-                let der = sec1.to_vec().or(Err(raw::CRYPTO_ERRNO_ALGORITHM_FAILURE))?;
+                let der = sec1.to_der().unwrap();
                 match format {
                     KeyEncodingFormat::Pem => Ok(pem::encode(&pem::Pem {
                         tag: "EC PRIVATE KEY".to_string(),
@@ -252,26 +277,53 @@ pub fn generate_key_pair(algorithm: &str) -> Result<(PublicKey, PrivateKey), Cry
 }
 
 use der::{
-    asn1::{AnyRef, BitStringRef, ContextSpecific, ObjectIdentifier, OctetStringRef},
+    asn1::{
+        AnyRef, BitStringRef, ContextSpecific, ContextSpecificRef, ObjectIdentifier,
+        OctetStringRef, UintRef,
+    },
     Decode, DecodeValue, Encode, EncodeValue, FixedTag, Header, Length, Reader, Sequence, Tag,
     TagMode, TagNumber, Writer,
 };
 
 /// X.509 `AlgorithmIdentifier`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct AlgorithmIdentifier<'a> {
+pub struct AlgorithmIdentifier<'a> {
     /// This field contains an ASN.1 `OBJECT IDENTIFIER`, a.k.a. OID.
-    algorithm: ObjectIdentifier,
+    pub algorithm: ObjectIdentifier,
 
     /// This field is `OPTIONAL` and contains the ASN.1 `ANY` type, which
     /// in this example allows arbitrary algorithm-defined parameters.
-    parameters: Option<AnyRef<'a>>,
+    pub parameters: Option<AnyRef<'a>>,
 }
 
 impl<'a> DecodeValue<'a> for AlgorithmIdentifier<'a> {
     fn decode_value<R: Reader<'a>>(reader: &mut R, _header: Header) -> der::Result<Self> {
+        // The `der::Decoder::Decode` method can be used to decode any
+        // type which impls the `Decode` trait, which is impl'd for
+        // all of the ASN.1 built-in types in the `der` crate.
+        //
+        // Note that if your struct's fields don't contain an ASN.1
+        // built-in type specifically, there are also helper methods
+        // for all of the built-in types supported by this library
+        // which can be used to select a specific type.
+        //
+        // For example, another way of decoding this particular field,
+        // which contains an ASN.1 `OBJECT IDENTIFIER`, is by calling
+        // `decoder.oid()`. Similar methods are defined for other
+        // ASN.1 built-in types.
         let algorithm = reader.decode()?;
+
+        // This field contains an ASN.1 `OPTIONAL` type. The `der` crate
+        // maps this directly to Rust's `Option` type and provides
+        // impls of the `Decode` and `Encode` traits for `Option`.
+        // To explicitly request an `OPTIONAL` type be decoded, use the
+        // `decoder.optional()` method.
         let parameters = reader.decode()?;
+
+        // The value returned from the provided `FnOnce` will be
+        // returned from the `any.sequence(...)` call above.
+        // Note that the entire sequence body *MUST* be consumed
+        // or an error will be returned.
         Ok(Self {
             algorithm,
             parameters,
@@ -279,14 +331,19 @@ impl<'a> DecodeValue<'a> for AlgorithmIdentifier<'a> {
     }
 }
 
-impl<'a> Sequence<'a> for AlgorithmIdentifier<'a> {
-    fn fields<F, T>(&self, field_encoder: F) -> der::Result<T>
-    where
-        F: FnOnce(&[&dyn Encode]) -> der::Result<T>,
-    {
-        field_encoder(&[&self.algorithm, &self.parameters])
+impl<'a> ::der::EncodeValue for AlgorithmIdentifier<'a> {
+    fn value_len(&self) -> ::der::Result<::der::Length> {
+        self.algorithm.encoded_len()? + self.parameters.encoded_len()?
+    }
+
+    fn encode_value(&self, writer: &mut impl ::der::Writer) -> ::der::Result<()> {
+        self.algorithm.encode(writer)?;
+        self.parameters.encode(writer)?;
+        Ok(())
     }
 }
+
+impl<'a> Sequence<'a> for AlgorithmIdentifier<'a> {}
 
 /// X.509 `SubjectPublicKeyInfo` (SPKI)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -309,14 +366,18 @@ impl<'a> DecodeValue<'a> for SubjectPublicKeyInfo<'a> {
     }
 }
 
-impl<'a> Sequence<'a> for SubjectPublicKeyInfo<'a> {
-    fn fields<F, T>(&self, field_encoder: F) -> der::Result<T>
-    where
-        F: FnOnce(&[&dyn Encode]) -> der::Result<T>,
-    {
-        field_encoder(&[&self.algorithm, &self.subject_public_key])
+impl<'a> EncodeValue for SubjectPublicKeyInfo<'a> {
+    fn value_len(&self) -> der::Result<Length> {
+        self.algorithm.encoded_len()? + self.subject_public_key.encoded_len()?
+    }
+
+    fn encode_value(&self, encoder: &mut impl Writer) -> der::Result<()> {
+        self.algorithm.encode(encoder)?;
+        self.subject_public_key.encode(encoder)
     }
 }
+
+impl<'a> Sequence<'a> for SubjectPublicKeyInfo<'a> {}
 
 /// Elliptic curve parameters as described in
 /// [RFC5480 Section 2.1.1](https://datatracker.ietf.org/doc/html/rfc5480#section-2.1.1):
@@ -359,7 +420,7 @@ impl EncodeValue for EcParameters {
         }
     }
 
-    fn encode_value(&self, writer: &mut dyn Writer) -> der::Result<()> {
+    fn encode_value(&self, writer: &mut impl Writer) -> der::Result<()> {
         match self {
             Self::NamedCurve(oid) => oid.encode_value(writer),
         }
@@ -440,29 +501,90 @@ impl<'a> DecodeValue<'a> for EcPrivateKey<'a> {
     }
 }
 
-impl<'a> Sequence<'a> for EcPrivateKey<'a> {
-    fn fields<F, T>(&self, f: F) -> der::Result<T>
-    where
-        F: FnOnce(&[&dyn Encode]) -> der::Result<T>,
-    {
-        f(&[
-            &VERSION,
-            &OctetStringRef::new(self.private_key)?,
-            &self.parameters.as_ref().map(|params| ContextSpecific {
-                tag_number: EC_PARAMETERS_TAG,
-                tag_mode: TagMode::Explicit,
-                value: *params,
-            }),
-            &self
-                .public_key
-                .map(|pk| {
-                    BitStringRef::from_bytes(pk).map(|value| ContextSpecific {
-                        tag_number: PUBLIC_KEY_TAG,
-                        tag_mode: TagMode::Explicit,
-                        value,
-                    })
+impl<'a> EcPrivateKey<'a> {
+    fn context_specific_parameters(&self) -> Option<ContextSpecificRef<'_, EcParameters>> {
+        self.parameters.as_ref().map(|params| ContextSpecificRef {
+            tag_number: EC_PARAMETERS_TAG,
+            tag_mode: TagMode::Explicit,
+            value: params,
+        })
+    }
+
+    fn context_specific_public_key(
+        &self,
+    ) -> der::Result<Option<ContextSpecific<BitStringRef<'a>>>> {
+        self.public_key
+            .map(|pk| {
+                BitStringRef::from_bytes(pk).map(|value| ContextSpecific {
+                    tag_number: PUBLIC_KEY_TAG,
+                    tag_mode: TagMode::Explicit,
+                    value,
                 })
-                .transpose()?,
-        ])
+            })
+            .transpose()
     }
 }
+
+impl<'a> EncodeValue for EcPrivateKey<'a> {
+    fn value_len(&self) -> der::Result<Length> {
+        VERSION.encoded_len()?
+            + OctetStringRef::new(self.private_key)?.encoded_len()?
+            + self.context_specific_parameters().encoded_len()?
+            + self.context_specific_public_key()?.encoded_len()?
+    }
+
+    fn encode_value(&self, encoder: &mut impl Writer) -> der::Result<()> {
+        VERSION.encode(encoder)?;
+        OctetStringRef::new(self.private_key)?.encode(encoder)?;
+        self.context_specific_parameters().encode(encoder)?;
+        self.context_specific_public_key()?.encode(encoder)
+    }
+}
+
+impl<'a> Sequence<'a> for EcPrivateKey<'a> {}
+
+/// PKCS#1 RSA Public Keys as defined in [RFC 8017 Appendix 1.1].
+///
+/// ASN.1 structure containing a serialized RSA public key:
+///
+/// ```text
+/// RSAPublicKey ::= SEQUENCE {
+///     modulus           INTEGER,  -- n
+///     publicExponent    INTEGER   -- e
+/// }
+/// ```
+///
+/// [RFC 8017 Appendix 1.1]: https://datatracker.ietf.org/doc/html/rfc8017#appendix-A.1.1
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RsaPublicKey<'a> {
+    /// `n`: RSA modulus
+    pub modulus: UintRef<'a>,
+
+    /// `e`: RSA public exponent
+    pub public_exponent: UintRef<'a>,
+}
+
+impl<'a> DecodeValue<'a> for RsaPublicKey<'a> {
+    fn decode_value<R: Reader<'a>>(reader: &mut R, header: Header) -> der::Result<Self> {
+        reader.read_nested(header.length, |reader| {
+            Ok(Self {
+                modulus: reader.decode()?,
+                public_exponent: reader.decode()?,
+            })
+        })
+    }
+}
+
+impl EncodeValue for RsaPublicKey<'_> {
+    fn value_len(&self) -> der::Result<Length> {
+        self.modulus.encoded_len()? + self.public_exponent.encoded_len()?
+    }
+
+    fn encode_value(&self, writer: &mut impl Writer) -> der::Result<()> {
+        self.modulus.encode(writer)?;
+        self.public_exponent.encode(writer)?;
+        Ok(())
+    }
+}
+
+impl<'a> Sequence<'a> for RsaPublicKey<'a> {}
