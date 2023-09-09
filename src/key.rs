@@ -15,10 +15,10 @@ enum CurveKind {
     Secp384r1,
 }
 
-const OID_CURVE_PRIME256V1: &'static str = "1.2.840.10045.3.1.7";
-const OID_CURVE_SECP256K1: &'static str = "1.3.132.0.10";
-const OID_CURVE_SECP384R1: &'static str = "1.3.132.0.34";
-const OID_ED25519: &'static str = "1.3.101.112";
+const OID_CURVE_PRIME256V1: &str = "1.2.840.10045.3.1.7";
+const OID_CURVE_SECP256K1: &str = "1.3.132.0.10";
+const OID_CURVE_SECP384R1: &str = "1.3.132.0.34";
+const OID_ED25519: &str = "1.3.101.112";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AlgoKind {
@@ -97,19 +97,20 @@ impl PublicKey {
         kind: PublicKeyEncodingType,
         format: KeyEncodingFormat,
     ) -> Result<Vec<u8>, CryptoErrno> {
-        // for ecdsa support der-spki, pem-spki, bin-sec1
-        // for eddsa support bin-raw
+        // for rsa, rsa-pss support der-spki(pkcs8), pem-spki(pem)
+        // for ecdsa support der-spki(pkcs8), pem-spki(pem), bin-raw(sec)
+        // for eddsa support bin-raw(raw)
         match (self.algo, kind, format) {
-            (
-                AlgoKind::Ec(_) | AlgoKind::Rsa(_) | AlgoKind::RsaPss(_),
-                PublicKeyEncodingType::Spki,
-                KeyEncodingFormat::Pem,
-            ) => publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PEM),
-            (
-                AlgoKind::Ec(_) | AlgoKind::Rsa(_) | AlgoKind::RsaPss(_),
-                PublicKeyEncodingType::Spki,
-                KeyEncodingFormat::Der,
-            ) => publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8),
+            (AlgoKind::Rsa(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem)
+            | (AlgoKind::RsaPss(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem)
+            | (AlgoKind::Ec(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem) => {
+                publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PEM)
+            }
+            (AlgoKind::Rsa(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Der)
+            | (AlgoKind::RsaPss(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Der)
+            | (AlgoKind::Ec(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Der) => {
+                publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8)
+            }
             (AlgoKind::Ec(curve), _, KeyEncodingFormat::Jwk) => {
                 let bin = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_SEC)?;
                 let compress_kind = bin[0];
@@ -141,11 +142,8 @@ impl PublicKey {
             (AlgoKind::RsaPss(_), _, KeyEncodingFormat::Jwk) => {
                 Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING)
             }
-            (
-                AlgoKind::Ed,
-                PublicKeyEncodingType::Spki,
-                KeyEncodingFormat::Der | KeyEncodingFormat::Pem,
-            ) => {
+            (AlgoKind::Ed, PublicKeyEncodingType::Spki, KeyEncodingFormat::Der)
+            | (AlgoKind::Ed, PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem) => {
                 let raw = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_RAW)?;
                 let spki = SubjectPublicKeyInfo {
                     algorithm: AlgorithmIdentifier {
@@ -171,7 +169,24 @@ impl PublicKey {
                 let jwk = format!(r#"{{"crv":"Ed25519","x":"{x}","kty":"OKP"}}"#);
                 Ok(jwk.into_bytes())
             }
-            (AlgoKind::Rsa(_), PublicKeyEncodingType::Pkcs1, _) => todo!(),
+            (AlgoKind::Rsa(_), PublicKeyEncodingType::Pkcs1, KeyEncodingFormat::Pem)
+            | (AlgoKind::Rsa(_), PublicKeyEncodingType::Pkcs1, KeyEncodingFormat::Der) => {
+                let der = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8)?;
+                let rsa_pk = SubjectPublicKeyInfo::from_der(&der)
+                    .unwrap()
+                    .subject_public_key
+                    .as_bytes()
+                    .unwrap();
+                match format {
+                    KeyEncodingFormat::Jwk => unreachable!(),
+                    KeyEncodingFormat::Der => Ok(rsa_pk.to_vec()),
+                    KeyEncodingFormat::Pem => Ok(pem::encode(&pem::Pem {
+                        tag: "RSA PUBLIC KEY".to_string(),
+                        contents: rsa_pk.to_vec(),
+                    })
+                    .into_bytes()),
+                }
+            }
             (_, PublicKeyEncodingType::Pkcs1, _) => Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING),
         }
     }
@@ -204,8 +219,9 @@ impl PrivateKey {
         kind: PrivateKeyEncodingType,
         format: KeyEncodingFormat,
     ) -> Result<Vec<u8>, CryptoErrno> {
-        // for ecdsa support bin-pkcs8, pem-pkcs8, bin-raw
-        // for eddsa support bin-raw
+        // for rsa, rsa-pss support der-spki(pkcs8), pem-spki(pem)
+        // for ecdsa support der-spki(pkcs8), pem-spki(pem), bin-raw(sec)
+        // for eddsa support bin-raw(raw)
         match (self.algo, kind, format) {
             (
                 AlgoKind::Ec(_) | AlgoKind::Rsa(_) | AlgoKind::RsaPss(_),
