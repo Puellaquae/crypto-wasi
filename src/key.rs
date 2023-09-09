@@ -110,7 +110,21 @@ impl PublicKey {
                 PublicKeyEncodingType::Spki,
                 KeyEncodingFormat::Der,
             ) => publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8),
-            (AlgoKind::Ec(_), _, KeyEncodingFormat::Jwk) => todo!(),
+            (AlgoKind::Ec(curve), _, KeyEncodingFormat::Jwk) => {
+                let bin = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_SEC)?;
+                let compress_kind = bin[0];
+                // rfc5480, sec1 2.3.3
+                assert!(compress_kind == 0x04, "only support uncompressed form now");
+                let x = URL_SAFE_NO_PAD.encode(&bin[1..33]);
+                let y = URL_SAFE_NO_PAD.encode(&bin[33..65]);
+                let curve_name = match curve {
+                    CurveKind::Prime256v1 => "P-256",
+                    CurveKind::Secp256k1 => "secp256k1",
+                    CurveKind::Secp384r1 => "P-384",
+                };
+                let jwk = format!(r#"{{"x":"{x}","y":"{y}","kty":"EC","crv":"{curve_name}"}}"#);
+                Ok(jwk.into_bytes())
+            }
             (AlgoKind::Rsa(_), _, KeyEncodingFormat::Jwk) => {
                 let der = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8)?;
                 let raw = SubjectPublicKeyInfo::from_der(&der)
