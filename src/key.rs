@@ -223,25 +223,42 @@ impl PrivateKey {
         // for ecdsa support der-spki(pkcs8), pem-spki(pem), bin-raw(sec)
         // for eddsa support bin-raw(raw)
         match (self.algo, kind, format) {
-            (
-                AlgoKind::Ec(_) | AlgoKind::Rsa(_) | AlgoKind::RsaPss(_),
-                PrivateKeyEncodingType::Pkcs8,
-                KeyEncodingFormat::Pem,
-            ) => secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PEM),
-            (
-                AlgoKind::Rsa(_) | AlgoKind::RsaPss(_),
-                PrivateKeyEncodingType::Pkcs8,
-                KeyEncodingFormat::Der,
-            ) => secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PKCS8),
-            // todo: ENCODING_PKCS8 on ecdsa get sec1-der actually
-            (AlgoKind::Ec(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
-                let pem = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PEM)?;
-                pem::parse(pem)
-                    .or(Err(raw::CRYPTO_ERRNO_ALGORITHM_FAILURE))
-                    .map(|p| p.contents)
+            (AlgoKind::Ec(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem)
+            | (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem)
+            | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem) => {
+                secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PEM)
             }
-            (AlgoKind::Ec(curve), PrivateKeyEncodingType::Sec1, _)
-            | (AlgoKind::Ec(curve), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Jwk) => {
+            (AlgoKind::Ec(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der)
+            | (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der)
+            | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
+                secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PKCS8)
+            }
+            (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem)
+            | (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
+                let raw = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
+                let der = PrivateKeyInfo::new(
+                    AlgorithmIdentifier {
+                        algorithm: ObjectIdentifier::new(OID_ED25519).unwrap(),
+                        parameters: None,
+                    },
+                    &OctetString::new(raw).unwrap().to_der().unwrap(),
+                )
+                .to_der()
+                .unwrap();
+                match format {
+                    KeyEncodingFormat::Der => Ok(der),
+                    KeyEncodingFormat::Pem => Ok(pem::encode(&pem::Pem {
+                        tag: "PRIVATE KEY".to_string(),
+                        contents: der,
+                    })
+                    .into_bytes()),
+                    KeyEncodingFormat::Jwk => unreachable!(),
+                }
+            }
+            (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Pem)
+            | (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Der) => todo!(),
+            (AlgoKind::Ec(curve), PrivateKeyEncodingType::Sec1, KeyEncodingFormat::Pem)
+            | (AlgoKind::Ec(curve), PrivateKeyEncodingType::Sec1, KeyEncodingFormat::Der) => {
                 let res = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
                 let curve = match curve {
                     CurveKind::Prime256v1 => OID_CURVE_PRIME256V1,
@@ -264,14 +281,21 @@ impl PrivateKey {
                     })
                     .into_bytes()),
                     KeyEncodingFormat::Der => Ok(der),
-                    KeyEncodingFormat::Jwk => todo!(),
+                    KeyEncodingFormat::Jwk => unreachable!(),
                 }
             }
-            (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs8, _) => todo!(),
-            (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs1, _) => todo!(),
-            (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Jwk) => todo!(),
-            (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Jwk) => todo!(),
-            _ => Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING),
+            (AlgoKind::Ed, _, KeyEncodingFormat::Jwk) => todo!(),
+            (AlgoKind::Ec(_), _, KeyEncodingFormat::Jwk) => todo!(),
+            (AlgoKind::Rsa(_), _, KeyEncodingFormat::Jwk) => todo!(),
+            (AlgoKind::Rsa(_), PrivateKeyEncodingType::Sec1, _)
+            | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Sec1, _)
+            | (AlgoKind::Ed, PrivateKeyEncodingType::Sec1, _)
+            | (AlgoKind::RsaPss(_), _, KeyEncodingFormat::Jwk)
+            | (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs1, _)
+            | (AlgoKind::Ec(_), PrivateKeyEncodingType::Pkcs1, _)
+            | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Pkcs1, _) => {
+                Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING)
+            }
         }
     }
 }
@@ -306,10 +330,38 @@ pub fn generate_key_pair(algorithm: &str) -> Result<(PublicKey, PrivateKey), Cry
     ))
 }
 
+/*
+Copyright (c) 2020-2023 The RustCrypto Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+*/
+
 use der::{
     asn1::{
         AnyRef, BitStringRef, ContextSpecific, ContextSpecificRef, ObjectIdentifier,
-        OctetStringRef, UintRef,
+        OctetStringRef, UintRef, OctetString,
     },
     Decode, DecodeValue, Encode, EncodeValue, FixedTag, Header, Length, Reader, Sequence, Tag,
     TagMode, TagNumber, Writer,
@@ -317,7 +369,7 @@ use der::{
 
 /// X.509 `AlgorithmIdentifier`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct AlgorithmIdentifier<'a> {
+struct AlgorithmIdentifier<'a> {
     /// This field contains an ASN.1 `OBJECT IDENTIFIER`, a.k.a. OID.
     pub algorithm: ObjectIdentifier,
 
@@ -424,7 +476,7 @@ impl<'a> Sequence<'a> for SubjectPublicKeyInfo<'a> {}
 ///   -- with ANSI X9.
 /// ```
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum EcParameters {
+enum EcParameters {
     /// Elliptic curve named by a particular OID.
     ///
     /// > namedCurve identifies all the required values for a particular
@@ -586,7 +638,7 @@ impl<'a> Sequence<'a> for EcPrivateKey<'a> {}
 ///
 /// [RFC 8017 Appendix 1.1]: https://datatracker.ietf.org/doc/html/rfc8017#appendix-A.1.1
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct RsaPublicKey<'a> {
+struct RsaPublicKey<'a> {
     /// `n`: RSA modulus
     pub modulus: UintRef<'a>,
 
@@ -618,3 +670,235 @@ impl EncodeValue for RsaPublicKey<'_> {
 }
 
 impl<'a> Sequence<'a> for RsaPublicKey<'a> {}
+
+/// Version identifier for PKCS#8 documents.
+///
+/// (RFC 5958 designates `0` and `1` as the only valid versions for PKCS#8 documents)
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+enum Version {
+    /// Denotes PKCS#8 v1: no public key field.
+    V1 = 0,
+
+    /// Denotes PKCS#8 v2: `OneAsymmetricKey` with public key field.
+    V2 = 1,
+}
+
+impl Version {
+    /// Is this version expected to have a public key?
+    pub fn has_public_key(self) -> bool {
+        match self {
+            Version::V1 => false,
+            Version::V2 => true,
+        }
+    }
+}
+
+impl<'a> Decode<'a> for Version {
+    fn decode<R: Reader<'a>>(decoder: &mut R) -> der::Result<Self> {
+        Version::try_from(u8::decode(decoder)?).map_err(|_| Self::TAG.value_error())
+    }
+}
+
+impl Encode for Version {
+    fn encoded_len(&self) -> der::Result<der::Length> {
+        der::Length::from(1u8).for_tlv()
+    }
+
+    fn encode(&self, writer: &mut impl Writer) -> der::Result<()> {
+        u8::from(*self).encode(writer)
+    }
+}
+
+impl From<Version> for u8 {
+    fn from(version: Version) -> Self {
+        version as u8
+    }
+}
+
+impl TryFrom<u8> for Version {
+    type Error = der::Error;
+    fn try_from(byte: u8) -> Result<Version, der::Error> {
+        match byte {
+            0 => Ok(Version::V1),
+            1 => Ok(Version::V2),
+            _ => Err(Self::TAG.value_error()),
+        }
+    }
+}
+
+impl FixedTag for Version {
+    const TAG: Tag = Tag::Integer;
+}
+
+/// PKCS#8 `PrivateKeyInfo`.
+///
+/// ASN.1 structure containing an `AlgorithmIdentifier`, private key
+/// data in an algorithm specific format, and optional attributes
+/// (ignored by this implementation).
+///
+/// Supports PKCS#8 v1 as described in [RFC 5208] and PKCS#8 v2 as described
+/// in [RFC 5958]. PKCS#8 v2 keys include an additional public key field.
+///
+/// # PKCS#8 v1 `PrivateKeyInfo`
+///
+/// Described in [RFC 5208 Section 5]:
+///
+/// ```text
+/// PrivateKeyInfo ::= SEQUENCE {
+///         version                   Version,
+///         privateKeyAlgorithm       PrivateKeyAlgorithmIdentifier,
+///         privateKey                PrivateKey,
+///         attributes           [0]  IMPLICIT Attributes OPTIONAL }
+///
+/// Version ::= INTEGER
+///
+/// PrivateKeyAlgorithmIdentifier ::= AlgorithmIdentifier
+///
+/// PrivateKey ::= OCTET STRING
+///
+/// Attributes ::= SET OF Attribute
+/// ```
+///
+/// # PKCS#8 v2 `OneAsymmetricKey`
+///
+/// PKCS#8 `OneAsymmetricKey` as described in [RFC 5958 Section 2]:
+///
+/// ```text
+/// PrivateKeyInfo ::= OneAsymmetricKey
+///
+/// OneAsymmetricKey ::= SEQUENCE {
+///     version                   Version,
+///     privateKeyAlgorithm       PrivateKeyAlgorithmIdentifier,
+///     privateKey                PrivateKey,
+///     attributes            [0] Attributes OPTIONAL,
+///     ...,
+///     [[2: publicKey        [1] PublicKey OPTIONAL ]],
+///     ...
+///   }
+///
+/// Version ::= INTEGER { v1(0), v2(1) } (v1, ..., v2)
+///
+/// PrivateKeyAlgorithmIdentifier ::= AlgorithmIdentifier
+///
+/// PrivateKey ::= OCTET STRING
+///
+/// Attributes ::= SET OF Attribute
+///
+/// PublicKey ::= BIT STRING
+/// ```
+///
+/// [RFC 5208]: https://tools.ietf.org/html/rfc5208
+/// [RFC 5958]: https://datatracker.ietf.org/doc/html/rfc5958
+/// [RFC 5208 Section 5]: https://tools.ietf.org/html/rfc5208#section-5
+/// [RFC 5958 Section 2]: https://datatracker.ietf.org/doc/html/rfc5958#section-2
+#[derive(Clone)]
+struct PrivateKeyInfo<'a> {
+    /// X.509 `AlgorithmIdentifier` for the private key type.
+    pub algorithm: AlgorithmIdentifier<'a>,
+
+    /// Private key data.
+    pub private_key: &'a [u8],
+
+    /// Public key data, optionally available if version is V2.
+    pub public_key: Option<&'a [u8]>,
+}
+
+impl<'a> PrivateKeyInfo<'a> {
+    /// Create a new PKCS#8 [`PrivateKeyInfo`] message.
+    ///
+    /// This is a helper method which initializes `attributes` and `public_key`
+    /// to `None`, helpful if you aren't using those.
+    pub fn new(algorithm: AlgorithmIdentifier<'a>, private_key: &'a [u8]) -> Self {
+        Self {
+            algorithm,
+            private_key,
+            public_key: None,
+        }
+    }
+
+    /// Get the PKCS#8 [`Version`] for this structure.
+    ///
+    /// [`Version::V1`] if `public_key` is `None`, [`Version::V2`] if `Some`.
+    pub fn version(&self) -> Version {
+        if self.public_key.is_some() {
+            Version::V2
+        } else {
+            Version::V1
+        }
+    }
+
+    /// Get a `BIT STRING` representation of the public key, if present.
+    fn public_key_bit_string(&self) -> der::Result<Option<ContextSpecific<BitStringRef<'a>>>> {
+        self.public_key
+            .map(|pk| {
+                BitStringRef::from_bytes(pk).map(|value| ContextSpecific {
+                    tag_number: PUBLIC_KEY_TAG,
+                    tag_mode: TagMode::Implicit,
+                    value,
+                })
+            })
+            .transpose()
+    }
+}
+
+impl<'a> DecodeValue<'a> for PrivateKeyInfo<'a> {
+    fn decode_value<R: Reader<'a>>(
+        reader: &mut R,
+        header: Header,
+    ) -> der::Result<PrivateKeyInfo<'a>> {
+        reader.read_nested(header.length, |reader| {
+            // Parse and validate `version` INTEGER.
+            let version = Version::decode(reader)?;
+            let algorithm = reader.decode()?;
+            let private_key = OctetStringRef::decode(reader)?.into();
+            let public_key = reader
+                .context_specific::<BitStringRef<'_>>(PUBLIC_KEY_TAG, TagMode::Implicit)?
+                .map(|bs| {
+                    bs.as_bytes()
+                        .ok_or_else(|| der::Tag::BitString.value_error())
+                })
+                .transpose()?;
+
+            if version.has_public_key() != public_key.is_some() {
+                return Err(reader.error(
+                    der::Tag::ContextSpecific {
+                        constructed: true,
+                        number: PUBLIC_KEY_TAG,
+                    }
+                    .value_error()
+                    .kind(),
+                ));
+            }
+
+            // Ignore any remaining extension fields
+            while !reader.is_finished() {
+                reader.decode::<ContextSpecific<AnyRef<'_>>>()?;
+            }
+
+            Ok(Self {
+                algorithm,
+                private_key,
+                public_key,
+            })
+        })
+    }
+}
+
+impl EncodeValue for PrivateKeyInfo<'_> {
+    fn value_len(&self) -> der::Result<Length> {
+        self.version().encoded_len()?
+            + self.algorithm.encoded_len()?
+            + OctetStringRef::new(self.private_key)?.encoded_len()?
+            + self.public_key_bit_string()?.encoded_len()?
+    }
+
+    fn encode_value(&self, writer: &mut impl Writer) -> der::Result<()> {
+        self.version().encode(writer)?;
+        self.algorithm.encode(writer)?;
+        OctetStringRef::new(self.private_key)?.encode(writer)?;
+        self.public_key_bit_string()?.encode(writer)?;
+        Ok(())
+    }
+}
+
+impl<'a> Sequence<'a> for PrivateKeyInfo<'a> {}
