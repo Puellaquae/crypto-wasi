@@ -229,9 +229,14 @@ impl PrivateKey {
                 secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PEM)
             }
             (AlgoKind::Ec(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der)
-            | (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der)
             | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
                 secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PKCS8)
+            }
+            (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
+                let pkcs8 = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PEM)?;
+                pem::parse(pkcs8)
+                    .map(|p| p.contents)
+                    .or(Err(raw::CRYPTO_ERRNO_ALGORITHM_FAILURE))
             }
             (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem)
             | (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
@@ -256,7 +261,19 @@ impl PrivateKey {
                 }
             }
             (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Pem)
-            | (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Der) => todo!(),
+            | (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Der) => {
+                let pkcs8 = self.export(PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der)?;
+                let raw = PrivateKeyInfo::from_der(&pkcs8).unwrap().private_key;
+                match format {
+                    KeyEncodingFormat::Der => Ok(raw.to_vec()),
+                    KeyEncodingFormat::Pem => Ok(pem::encode(&pem::Pem {
+                        tag: "RSA PRIVATE KEY".to_string(),
+                        contents: raw.to_vec(),
+                    })
+                    .into_bytes()),
+                    KeyEncodingFormat::Jwk => unreachable!(),
+                }
+            }
             (AlgoKind::Ec(curve), PrivateKeyEncodingType::Sec1, KeyEncodingFormat::Pem)
             | (AlgoKind::Ec(curve), PrivateKeyEncodingType::Sec1, KeyEncodingFormat::Der) => {
                 let res = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
@@ -286,7 +303,22 @@ impl PrivateKey {
             }
             (AlgoKind::Ed, _, KeyEncodingFormat::Jwk) => todo!(),
             (AlgoKind::Ec(_), _, KeyEncodingFormat::Jwk) => todo!(),
-            (AlgoKind::Rsa(_), _, KeyEncodingFormat::Jwk) => todo!(),
+            (AlgoKind::Rsa(_), _, KeyEncodingFormat::Jwk) => {
+                let pkcs1 = self.export(PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Der)?;
+                let raw = RsaPrivateKey::from_der(&pkcs1).unwrap();
+                let n = URL_SAFE_NO_PAD.encode(raw.modulus.as_bytes());
+                let e = URL_SAFE_NO_PAD.encode(raw.public_exponent.as_bytes());
+                let d = URL_SAFE_NO_PAD.encode(raw.private_exponent.as_bytes());
+                let p = URL_SAFE_NO_PAD.encode(raw.prime1.as_bytes());
+                let q = URL_SAFE_NO_PAD.encode(raw.prime2.as_bytes());
+                let dp = URL_SAFE_NO_PAD.encode(raw.exponent1.as_bytes());
+                let dq = URL_SAFE_NO_PAD.encode(raw.exponent2.as_bytes());
+                let qi = URL_SAFE_NO_PAD.encode(raw.coefficient.as_bytes());
+                let jwk = format!(
+                    r#"{{"n":"{n}","e":"{e}","kty":"RSA","d":"{d}","p":"{p}","q":"{q}","dp":"{dp}","dq":"{dq}","qi":"{qi}"}}"#
+                );
+                Ok(jwk.into_bytes())
+            }
             (AlgoKind::Rsa(_), PrivateKeyEncodingType::Sec1, _)
             | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Sec1, _)
             | (AlgoKind::Ed, PrivateKeyEncodingType::Sec1, _)
@@ -360,8 +392,8 @@ DEALINGS IN THE SOFTWARE.
 
 use der::{
     asn1::{
-        AnyRef, BitStringRef, ContextSpecific, ContextSpecificRef, ObjectIdentifier,
-        OctetStringRef, UintRef, OctetString,
+        AnyRef, BitStringRef, ContextSpecific, ContextSpecificRef, ObjectIdentifier, OctetString,
+        OctetStringRef, UintRef,
     },
     Decode, DecodeValue, Encode, EncodeValue, FixedTag, Header, Length, Reader, Sequence, Tag,
     TagMode, TagNumber, Writer,
@@ -902,3 +934,259 @@ impl EncodeValue for PrivateKeyInfo<'_> {
 }
 
 impl<'a> Sequence<'a> for PrivateKeyInfo<'a> {}
+
+/// PKCS#1 OtherPrimeInfo as defined in [RFC 8017 Appendix 1.2].
+///
+/// ASN.1 structure containing an additional prime in a multi-prime RSA key.
+///
+/// ```text
+/// OtherPrimeInfo ::= SEQUENCE {
+///     prime             INTEGER,  -- ri
+///     exponent          INTEGER,  -- di
+///     coefficient       INTEGER   -- ti
+/// }
+/// ```
+///
+/// [RFC 8017 Appendix 1.2]: https://datatracker.ietf.org/doc/html/rfc8017#appendix-A.1.2
+#[derive(Clone)]
+struct OtherPrimeInfo<'a> {
+    /// Prime factor `r_i` of `n`, where `i` >= 3.
+    pub prime: UintRef<'a>,
+
+    /// Exponent: `d_i = d mod (r_i - 1)`.
+    pub exponent: UintRef<'a>,
+
+    /// CRT coefficient: `t_i = (r_1 * r_2 * ... * r_(i-1))^(-1) mod r_i`.
+    pub coefficient: UintRef<'a>,
+}
+
+impl<'a> DecodeValue<'a> for OtherPrimeInfo<'a> {
+    fn decode_value<R: Reader<'a>>(reader: &mut R, header: Header) -> der::Result<Self> {
+        reader.read_nested(header.length, |reader| {
+            Ok(Self {
+                prime: reader.decode()?,
+                exponent: reader.decode()?,
+                coefficient: reader.decode()?,
+            })
+        })
+    }
+}
+
+impl EncodeValue for OtherPrimeInfo<'_> {
+    fn value_len(&self) -> der::Result<Length> {
+        self.prime.encoded_len()? + self.exponent.encoded_len()? + self.coefficient.encoded_len()?
+    }
+
+    fn encode_value(&self, writer: &mut impl Writer) -> der::Result<()> {
+        self.prime.encode(writer)?;
+        self.exponent.encode(writer)?;
+        self.coefficient.encode(writer)?;
+        Ok(())
+    }
+}
+
+impl<'a> Sequence<'a> for OtherPrimeInfo<'a> {}
+
+type OtherPrimeInfos<'a> = Vec<OtherPrimeInfo<'a>>;
+
+/// Version identifier for PKCS#1 documents as defined in
+/// [RFC 8017 Appendix 1.2].
+///
+/// > version is the version number, for compatibility with future
+/// > revisions of this document.  It SHALL be 0 for this version of the
+/// > document, unless multi-prime is used; in which case, it SHALL be 1.
+///
+/// ```text
+/// Version ::= INTEGER { two-prime(0), multi(1) }
+///    (CONSTRAINED BY
+///    {-- version must be multi if otherPrimeInfos present --})
+/// ```
+///
+/// [RFC 8017 Appendix 1.2]: https://datatracker.ietf.org/doc/html/rfc8017#appendix-A.1.2
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u8)]
+enum Pkcs1Version {
+    /// Denotes a `two-prime` key
+    TwoPrime = 0,
+
+    /// Denotes a `multi` (i.e. multi-prime) key
+    Multi = 1,
+}
+
+impl Pkcs1Version {
+    /// Is this a multi-prime RSA key?
+    pub fn is_multi(self) -> bool {
+        self == Self::Multi
+    }
+}
+
+impl From<Pkcs1Version> for u8 {
+    fn from(version: Pkcs1Version) -> Self {
+        version as u8
+    }
+}
+
+impl TryFrom<u8> for Pkcs1Version {
+    type Error = ();
+    fn try_from(byte: u8) -> Result<Pkcs1Version, ()> {
+        match byte {
+            0 => Ok(Pkcs1Version::TwoPrime),
+            1 => Ok(Pkcs1Version::Multi),
+            _ => Err(()),
+        }
+    }
+}
+
+impl<'a> Decode<'a> for Pkcs1Version {
+    fn decode<R: Reader<'a>>(decoder: &mut R) -> der::Result<Self> {
+        Pkcs1Version::try_from(u8::decode(decoder)?).map_err(|_| Self::TAG.value_error())
+    }
+}
+
+impl Encode for Pkcs1Version {
+    fn encoded_len(&self) -> der::Result<der::Length> {
+        der::Length::ONE.for_tlv()
+    }
+
+    fn encode(&self, writer: &mut impl Writer) -> der::Result<()> {
+        u8::from(*self).encode(writer)
+    }
+}
+
+impl FixedTag for Pkcs1Version {
+    const TAG: Tag = Tag::Integer;
+}
+
+/// PKCS#1 RSA Private Keys as defined in [RFC 8017 Appendix 1.2].
+///
+/// ASN.1 structure containing a serialized RSA private key:
+///
+/// ```text
+/// RSAPrivateKey ::= SEQUENCE {
+///     version           Version,
+///     modulus           INTEGER,  -- n
+///     publicExponent    INTEGER,  -- e
+///     privateExponent   INTEGER,  -- d
+///     prime1            INTEGER,  -- p
+///     prime2            INTEGER,  -- q
+///     exponent1         INTEGER,  -- d mod (p-1)
+///     exponent2         INTEGER,  -- d mod (q-1)
+///     coefficient       INTEGER,  -- (inverse of q) mod p
+///     otherPrimeInfos   OtherPrimeInfos OPTIONAL
+/// }
+/// ```
+///
+/// Note: the `version` field is selected automatically based on the absence or
+/// presence of the `other_prime_infos` field.
+///
+/// [RFC 8017 Appendix 1.2]: https://datatracker.ietf.org/doc/html/rfc8017#appendix-A.1.2
+#[derive(Clone)]
+struct RsaPrivateKey<'a> {
+    /// `n`: RSA modulus.
+    pub modulus: UintRef<'a>,
+
+    /// `e`: RSA public exponent.
+    pub public_exponent: UintRef<'a>,
+
+    /// `d`: RSA private exponent.
+    pub private_exponent: UintRef<'a>,
+
+    /// `p`: first prime factor of `n`.
+    pub prime1: UintRef<'a>,
+
+    /// `q`: Second prime factor of `n`.
+    pub prime2: UintRef<'a>,
+
+    /// First exponent: `d mod (p-1)`.
+    pub exponent1: UintRef<'a>,
+
+    /// Second exponent: `d mod (q-1)`.
+    pub exponent2: UintRef<'a>,
+
+    /// CRT coefficient: `(inverse of q) mod p`.
+    pub coefficient: UintRef<'a>,
+
+    /// Additional primes `r_3`, ..., `r_u`, in order, if this is a multi-prime
+    /// RSA key (i.e. `version` is `multi`).
+    pub other_prime_infos: Option<OtherPrimeInfos<'a>>,
+}
+
+impl<'a> RsaPrivateKey<'a> {
+    /// Get the public key that corresponds to this [`RsaPrivateKey`].
+    fn public_key(&self) -> RsaPublicKey<'a> {
+        RsaPublicKey {
+            modulus: self.modulus,
+            public_exponent: self.public_exponent,
+        }
+    }
+
+    /// Get the [`Pkcs1Version`] for this key.
+    ///
+    /// Determined by the presence or absence of the
+    /// [`RsaPrivateKey::other_prime_infos`] field.
+    fn version(&self) -> Pkcs1Version {
+        if self.other_prime_infos.is_some() {
+            Pkcs1Version::Multi
+        } else {
+            Pkcs1Version::TwoPrime
+        }
+    }
+}
+
+impl<'a> DecodeValue<'a> for RsaPrivateKey<'a> {
+    fn decode_value<R: Reader<'a>>(reader: &mut R, header: Header) -> der::Result<Self> {
+        reader.read_nested(header.length, |reader| {
+            let version = Pkcs1Version::decode(reader)?;
+
+            let result = Self {
+                modulus: reader.decode()?,
+                public_exponent: reader.decode()?,
+                private_exponent: reader.decode()?,
+                prime1: reader.decode()?,
+                prime2: reader.decode()?,
+                exponent1: reader.decode()?,
+                exponent2: reader.decode()?,
+                coefficient: reader.decode()?,
+                other_prime_infos: reader.decode()?,
+            };
+
+            // Ensure version is set correctly for two-prime vs multi-prime key.
+            if version.is_multi() != result.other_prime_infos.is_some() {
+                return Err(reader.error(der::ErrorKind::Value { tag: Tag::Integer }));
+            }
+
+            Ok(result)
+        })
+    }
+}
+
+impl EncodeValue for RsaPrivateKey<'_> {
+    fn value_len(&self) -> der::Result<Length> {
+        self.version().encoded_len()?
+            + self.modulus.encoded_len()?
+            + self.public_exponent.encoded_len()?
+            + self.private_exponent.encoded_len()?
+            + self.prime1.encoded_len()?
+            + self.prime2.encoded_len()?
+            + self.exponent1.encoded_len()?
+            + self.exponent2.encoded_len()?
+            + self.coefficient.encoded_len()?
+            + self.other_prime_infos.encoded_len()?
+    }
+
+    fn encode_value(&self, writer: &mut impl Writer) -> der::Result<()> {
+        self.version().encode(writer)?;
+        self.modulus.encode(writer)?;
+        self.public_exponent.encode(writer)?;
+        self.private_exponent.encode(writer)?;
+        self.prime1.encode(writer)?;
+        self.prime2.encode(writer)?;
+        self.exponent1.encode(writer)?;
+        self.exponent2.encode(writer)?;
+        self.coefficient.encode(writer)?;
+        self.other_prime_infos.encode(writer)?;
+        Ok(())
+    }
+}
+
+impl<'a> Sequence<'a> for RsaPrivateKey<'a> {}
