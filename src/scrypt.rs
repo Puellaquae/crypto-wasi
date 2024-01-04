@@ -71,10 +71,10 @@ impl ScryptRom {
         }
 
         for i in 0..16 {
-            self.b32[i] = ((self.xx[i * 4 + 0] & 0xff) as i32) << 0;
-            self.b32[i] |= ((self.xx[i * 4 + 1] & 0xff) as i32) << 8;
-            self.b32[i] |= ((self.xx[i * 4 + 2] & 0xff) as i32) << 16;
-            self.b32[i] |= ((self.xx[i * 4 + 3] & 0xff) as i32) << 24;
+            self.b32[i] = self.xx[i * 4] as i32;
+            self.b32[i] |= (self.xx[i * 4 + 1] as i32) << 8;
+            self.b32[i] |= (self.xx[i * 4 + 2] as i32) << 16;
+            self.b32[i] |= (self.xx[i * 4 + 3] as i32) << 24;
         }
 
         self.x.copy_from_slice(&self.b32);
@@ -119,7 +119,7 @@ impl ScryptRom {
         }
 
         for i in 0..16 {
-            self.xx[i * 4 + 0] = (self.b32[i] >> 0 & 0xff) as u8;
+            self.xx[i * 4] = (self.b32[i] & 0xff) as u8;
             self.xx[i * 4 + 1] = (self.b32[i] >> 8 & 0xff) as u8;
             self.xx[i * 4 + 2] = (self.b32[i] >> 16 & 0xff) as u8;
             self.xx[i * 4 + 3] = (self.b32[i] >> 24 & 0xff) as u8;
@@ -165,6 +165,6 @@ pub fn scrypt(
     let blen = p * 128 * r;
     let b = pbkdf2(&password, salt, 1, blen, "HMAC/SHA-256")?;
     let s = scrypt_rom(&b, r, n, p);
-    let f = pbkdf2(&password, &s, 1, keylen, "HMAC/SHA-256")?;
+    let f = pbkdf2(&password, s, 1, keylen, "HMAC/SHA-256")?;
     Ok(f)
 }
