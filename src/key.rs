@@ -1,5 +1,5 @@
 use crate::{raw, CryptoErrno, NONE_OPTS};
-use base64::{engine::general_purpose::URL_SAFE, engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum KeyEncodingFormat {
@@ -165,7 +165,7 @@ impl PublicKey {
             }
             (AlgoKind::Ed, _, KeyEncodingFormat::Jwk) => {
                 let raw = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_RAW)?;
-                let x = URL_SAFE.encode(raw);
+                let x = URL_SAFE_NO_PAD.encode(raw);
                 let jwk = format!(r#"{{"crv":"Ed25519","x":"{x}","kty":"OKP"}}"#);
                 Ok(jwk.into_bytes())
             }
@@ -301,7 +301,15 @@ impl PrivateKey {
                     KeyEncodingFormat::Jwk => unreachable!(),
                 }
             }
-            (AlgoKind::Ed, _, KeyEncodingFormat::Jwk) => todo!(),
+            (AlgoKind::Ed, _, KeyEncodingFormat::Jwk) => {
+                let raw = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
+                let d = URL_SAFE_NO_PAD.encode(raw);
+                let pk = self.get_publickey()?;
+                let pkraw = publickey_export(pk.handle, raw::PUBLICKEY_ENCODING_RAW)?;
+                let x = URL_SAFE_NO_PAD.encode(pkraw);
+                let jwk = format!(r#"{{"crv":"Ed25519","d":"{d}","x":"{x}","kty":"OKP"}}"#);
+                Ok(jwk.into_bytes())
+            }
             (AlgoKind::Ec(_), _, KeyEncodingFormat::Jwk) => todo!(),
             (AlgoKind::Rsa(_), _, KeyEncodingFormat::Jwk) => {
                 let pkcs1 = self.export(PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Der)?;
