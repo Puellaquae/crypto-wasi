@@ -7,17 +7,19 @@
 //!
 //! # Currently Subset Implemented
 //!
-//! - `createHash` (sha256, sha512, sha512-256)
-//! - `createHmac` (sha256, sha512)
-//! - `hkdf` (sha256, sha512)
-//! - `pbkdf2` (sha256, sha512)
-//! - `scrypt`
-//! - `createCipheriv` & `createDecipheriv` (aes-128-gcm, aes-256-gcm, chacha20-poly1305)
-//!
+//! - Hash (sha256, sha512, sha512-256)
+//! - Hmac (sha256, sha512)
+//! - hkdf (sha256, sha512)
+//! - pbkdf2 (sha256, sha512)
+//! - scrypt
+//! - Cipheriv & Decipheriv (aes-128-gcm, aes-256-gcm, chacha20-poly1305)
+//! - `generate_key_pair` (rsa-[2048, 3072, 4096], rsa-pss-[2048, 3072, 4096], ecdsa-[prime256v1, secp256k1, secp384r1], ed25519)
 //!
 //! # Working In Process
-//! - `generate_key_pair` (rsa-[2048, 3072, 4096], rsa-pss-[2048, 3072, 4096], ecdsa-[prime256v1, secp256k1, secp384r1], ed25519)
-//! - `keyObject.export`
+//! - KeyObject
+//! - Sign & Verify
+//! - ECDH
+//! - DiffieHellman
 //!
 //! # Not Implemented
 //! - `createCipher` & `createDecipher`:
@@ -46,7 +48,7 @@ mod scrypt;
 pub use scrypt::scrypt;
 
 mod cipher;
-pub use cipher::{Cipher, Decipher};
+pub use cipher::{Cipheriv, Decipheriv};
 
 mod key;
 pub use key::{

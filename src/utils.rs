@@ -1,4 +1,4 @@
-use crate::{raw, Cipher, Decipher, Hash, Hmac};
+use crate::{raw, Cipheriv, Decipheriv, Hash, Hmac};
 
 /// A simplified api to call and calculate hmac
 ///
@@ -47,7 +47,7 @@ pub fn decrypt(
     auth_tag: impl AsRef<[u8]>,
     msg: impl AsRef<[u8]>,
 ) -> Result<Vec<u8>, raw::CryptoErrno> {
-    let mut c = Decipher::create(alg, key, iv)?;
+    let mut c = Decipheriv::create(alg, key, iv)?;
     c.set_aad(aad)?;
     c.set_auth_tag(auth_tag)?;
     c.decrypt(msg)
@@ -61,7 +61,7 @@ pub fn encrypt(
     aad: impl AsRef<[u8]>,
     msg: impl AsRef<[u8]>,
 ) -> Result<(Vec<u8>, Vec<u8>), raw::CryptoErrno> {
-    let mut c = Cipher::create(alg, key, iv)?;
+    let mut c = Cipheriv::create(alg, key, iv)?;
     c.set_aad(aad)?;
     let out = c.encrypt(msg)?;
     let tag = c.take_auth_tag()?;

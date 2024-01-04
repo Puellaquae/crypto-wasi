@@ -1,28 +1,28 @@
 use crate::{raw, CryptoErrno};
 
-/// Equivalent to `crypto.Cipher`
+/// Equivalent to `crypto.Cipheriv`
 ///
-/// `cipher.setAutoPadding` is unsupported current.
+/// `cipheriv.setAutoPadding` is unsupported current.
 ///
 /// Example:
 ///
 /// ```rust
-/// use crate::Cipher;
+/// use crate::Cipheriv;
 ///
-/// let mut c = Cipher::create(alg, key, iv)?;
+/// let mut c = Cipheriv::create(alg, key, iv)?;
 /// c.set_aad(aad)?; // optional
 /// c.update(msg1)?;
 /// c.update(msg2)?;
 /// let res = c.fin()?;
 /// let auth_tag = c.get_auth_tag()?;
 /// ```
-pub struct Cipher {
+pub struct Cipheriv {
     handle: raw::SymmetricState,
     message: Vec<u8>,
     tag: Option<Vec<u8>>,
 }
 
-impl Cipher {
+impl Cipheriv {
     /// Equivalent to `createCipheriv`
     ///
     /// For `AES-128-GCM` key should be 16 bytes and iv should be 12 bytes.
@@ -133,7 +133,7 @@ impl Cipher {
     }
 }
 
-impl Drop for Cipher {
+impl Drop for Cipheriv {
     fn drop(&mut self) {
         unsafe {
             raw::symmetric_state_close(self.handle).unwrap();
@@ -141,23 +141,23 @@ impl Drop for Cipher {
     }
 }
 
-/// Equivalent to `crypto.Decipher`
+/// Equivalent to `crypto.Decipheriv`
 ///
 /// Example:
 ///
 /// ```rust
-/// let mut d = Decipher::create(alg, key, iv)?;
+/// let mut d = Decipheriv::create(alg, key, iv)?;
 /// d.set_aad(aad)?; // optional
 /// d.set_auth_tag(auth_tag)?;
 /// let src = d.decrypt(msg)?;
 /// ```
-pub struct Decipher {
+pub struct Decipheriv {
     handle: raw::SymmetricState,
     message: Vec<u8>,
     tag: Option<Vec<u8>>,
 }
 
-impl Decipher {
+impl Decipheriv {
     /// Equivalent to `createDecipheriv`
     ///
     /// For `AES-128-GCM` key should be 16 bytes and iv should be 12 bytes.
@@ -267,7 +267,7 @@ impl Decipher {
     }
 }
 
-impl Drop for Decipher {
+impl Drop for Decipheriv {
     fn drop(&mut self) {
         unsafe {
             raw::symmetric_state_close(self.handle).unwrap();

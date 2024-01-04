@@ -1,7 +1,7 @@
 use crypto_wasi::{
     hkdf, hkdf_hmac, pbkdf2, scrypt,
     utils::{decrypt, encrypt, hash, hex_to_u8array, hmac, u8array_to_hex},
-    Cipher, CryptoErrno, Decipher, Hash, Hmac,
+    Cipheriv, CryptoErrno, Decipheriv, Hash, Hmac,
 };
 
 #[test]
@@ -305,7 +305,7 @@ fn test_cipher() {
         );
         assert_eq!(
             || -> Result<(String, String), CryptoErrno> {
-                let mut c = Cipher::create(alg, key, iv)?;
+                let mut c = Cipheriv::create(alg, key, iv)?;
                 c.set_aad(aad)?;
                 c.update(msg)?;
                 let out = c.fin()?;
@@ -327,7 +327,7 @@ fn test_cipher() {
         );
         assert_eq!(
             || -> Result<Vec<u8>, CryptoErrno> {
-                let mut c = Decipher::create(alg, key, iv)?;
+                let mut c = Decipheriv::create(alg, key, iv)?;
                 c.set_aad(aad)?;
                 c.set_auth_tag(hex_to_u8array(tag).unwrap())?;
                 c.update(hex_to_u8array(enc).unwrap())?;
