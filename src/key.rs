@@ -1,10 +1,12 @@
 use crate::{raw, CryptoErrno, NONE_OPTS};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
+/// Setting encoding format for export [PublicKey] and [PrivateKey]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum KeyEncodingFormat {
     Pem,
     Der,
+    /// When JWK encoding format was selected, all other encoding options are ignored.
     Jwk,
 }
 
@@ -51,12 +53,13 @@ impl AlgoKind {
     }
 }
 
-/// WIP
+/// `crypto.KeyObject` for public (asymmetric) keys
 pub struct PublicKey {
     pub handle: raw::Publickey,
     algo: AlgoKind,
 }
 
+/// Setting encoding type for export [PublicKey]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PublicKeyEncodingType {
     Spki,
@@ -192,12 +195,13 @@ impl PublicKey {
     }
 }
 
-/// WIP
+/// `crypto.KeyObject` for private (asymmetric) keys
 pub struct PrivateKey {
     handle: raw::Secretkey,
     algo: AlgoKind,
 }
 
+/// Setting encoding type for export [PrivateKey]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PrivateKeyEncodingType {
     Pkcs8,
@@ -310,7 +314,25 @@ impl PrivateKey {
                 let jwk = format!(r#"{{"crv":"Ed25519","d":"{d}","x":"{x}","kty":"OKP"}}"#);
                 Ok(jwk.into_bytes())
             }
-            (AlgoKind::Ec(_), _, KeyEncodingFormat::Jwk) => todo!(),
+            (AlgoKind::Ec(curve), _, KeyEncodingFormat::Jwk) => {
+                let bin = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
+                let d = URL_SAFE_NO_PAD.encode(bin);
+                let curve_name = match curve {
+                    CurveKind::Prime256v1 => "P-256",
+                    CurveKind::Secp256k1 => "secp256k1",
+                    CurveKind::Secp384r1 => "P-384",
+                };
+                let pk = self.get_publickey()?;
+                let bin = publickey_export(pk.handle, raw::PUBLICKEY_ENCODING_SEC)?;
+                let compress_kind = bin[0];
+                // rfc5480, sec1 2.3.3
+                assert!(compress_kind == 0x04, "only support uncompressed form now");
+                let x = URL_SAFE_NO_PAD.encode(&bin[1..33]);
+                let y = URL_SAFE_NO_PAD.encode(&bin[33..65]);
+                let jwk =
+                    format!(r#"{{"x":"{x}","y":"{y}","kty":"EC","crv":"{curve_name}","d":"{d}"}}"#);
+                Ok(jwk.into_bytes())
+            }
             (AlgoKind::Rsa(_), _, KeyEncodingFormat::Jwk) => {
                 let pkcs1 = self.export(PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Der)?;
                 let raw = RsaPrivateKey::from_der(&pkcs1).unwrap();
@@ -340,9 +362,13 @@ impl PrivateKey {
     }
 }
 
-/// WIP
+/// Generates a new asymmetric key pair of the given `algorithm`
 ///
-/// - "ECDSA_P256_SHA256" prime256v1
+/// Unlike nodejs, it cannot directly specify the export parameter 
+/// and please use the [`PublicKey::export()`] and [`PrivateKey::export()`] function
+/// 
+/// Supported algorithm list:
+/// - "ECDSA_P256_SHA256" prime256v1 (curve name used in nodejs)
 /// - "ECDSA_K256_SHA256" secp256k1
 /// - "ECDSA_P384_SHA384" secp384r1
 /// - "ED25519"
@@ -1121,12 +1147,13 @@ struct RsaPrivateKey<'a> {
 
 impl<'a> RsaPrivateKey<'a> {
     /// Get the public key that corresponds to this [`RsaPrivateKey`].
-    fn public_key(&self) -> RsaPublicKey<'a> {
-        RsaPublicKey {
-            modulus: self.modulus,
-            public_exponent: self.public_exponent,
-        }
-    }
+    // used function
+    // fn public_key(&self) -> RsaPublicKey<'a> {
+    //     RsaPublicKey {
+    //         modulus: self.modulus,
+    //         public_exponent: self.public_exponent,
+    //     }
+    // }
 
     /// Get the [`Pkcs1Version`] for this key.
     ///
