@@ -43,7 +43,7 @@ fn hkdf_extract_raw(
     utils::hmac(alg, salt, &[key])
 }
 
-/// As same as `hkdf`, but use hmac to manual expand
+/// As same as [hkdf], but use hmac to manual expand
 ///
 /// See [https://github.com/WasmEdge/WasmEdge/issues/2176](https://github.com/WasmEdge/WasmEdge/issues/2176)
 pub fn hkdf_hmac(
@@ -76,6 +76,10 @@ pub fn hkdf_hmac(
 
 /// HKDF is a simple key derivation function defined in RFC 5869.
 ///
+/// Supported algorithm:
+/// - SHA256
+/// - SHA512
+/// 
 /// If you don't set `key_len` to 32 for `sha256` or 64 for `sha512` and get `WASI_CRYPTO_ERRNO_ALGORITHM_FAILURE` error,
 /// please use `hkdf_hmac` instead.  
 pub fn hkdf(
@@ -126,6 +130,10 @@ pub fn hkdf(
 ///
 /// When passing strings for `password` or `salt`,
 /// please consider [caveats when using strings as inputs to cryptographic APIs](https://nodejs.org/api/crypto.html#using-strings-as-inputs-to-cryptographic-apis).
+/// 
+/// Supported algorithm:
+/// - SHA256
+/// - SHA512
 pub fn pbkdf2(
     password: impl AsRef<[u8]>,
     salt: impl AsRef<[u8]>,

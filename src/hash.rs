@@ -12,6 +12,11 @@ use crate::{raw, CryptoErrno, NONE_KEY, NONE_OPTS};
 /// h.update("def")?;
 /// let res = h.digest()?;
 /// ```
+/// 
+/// Supported algorithm:
+/// 
+/// - HMAC/SHA-256
+/// - HMAC/SHA-512
 pub struct Hmac {
     handle: raw::SymmetricState,
 }
@@ -110,6 +115,11 @@ pub fn create_hmac(alg: &str, key: impl AsRef<[u8]>) -> Result<Hmac, CryptoErrno
 /// h.update("def")?;
 /// let res = h.digest()?;
 /// ```
+/// 
+/// Supported algorithm:
+/// - SHA-256
+/// - SHA-512
+/// - SHA-512/256
 pub struct Hash {
     handle: raw::SymmetricState,
     hash_len: usize,
