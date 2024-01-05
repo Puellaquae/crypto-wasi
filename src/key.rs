@@ -197,7 +197,9 @@ impl PublicKey {
 
 /// `crypto.KeyObject` for private (asymmetric) keys
 pub struct PrivateKey {
-    handle: raw::Secretkey,
+    pub(crate) handle: raw::Secretkey,
+    /// we need store keypair handle because WasmEdge not implemented `keypair_from_pk_and_sk`
+    pub(crate) keypair_handle: raw::Keypair,
     algo: AlgoKind,
 }
 
@@ -360,13 +362,22 @@ impl PrivateKey {
             }
         }
     }
+
+    pub fn get_asymmetric_key_type(&self) -> &'static str {
+        match self.algo {
+            AlgoKind::Ed => "ed25519",
+            AlgoKind::Ec(_) => "ec",
+            AlgoKind::Rsa(_) => "rsa",
+            AlgoKind::RsaPss(_) => "rsa-pss",
+        }
+    }
 }
 
 /// Generates a new asymmetric key pair of the given `algorithm`
 ///
-/// Unlike nodejs, it cannot directly specify the export parameter 
+/// Unlike nodejs, it cannot directly specify the export parameter
 /// and please use the [`PublicKey::export()`] and [`PrivateKey::export()`] function
-/// 
+///
 /// Supported algorithm list:
 /// - "ECDSA_P256_SHA256" prime256v1 (curve name used in nodejs)
 /// - "ECDSA_K256_SHA256" secp256k1
@@ -386,13 +397,17 @@ impl PrivateKey {
 /// - "RSA_PSS_4096_SHA512"
 pub fn generate_key_pair(algorithm: &str) -> Result<(PublicKey, PrivateKey), CryptoErrno> {
     let algo = AlgoKind::from_str(algorithm)?;
-    let (pk, sk) = unsafe {
+    let (pk, sk, kp) = unsafe {
         let kp = raw::keypair_generate(raw::ALGORITHM_TYPE_SIGNATURES, algorithm, NONE_OPTS)?;
-        (raw::keypair_publickey(kp)?, raw::keypair_secretkey(kp)?)
+        (raw::keypair_publickey(kp)?, raw::keypair_secretkey(kp)?, kp)
     };
     Ok((
         PublicKey { handle: pk, algo },
-        PrivateKey { handle: sk, algo },
+        PrivateKey {
+            handle: sk,
+            keypair_handle: kp,
+            algo,
+        },
     ))
 }
 

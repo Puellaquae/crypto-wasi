@@ -14,9 +14,10 @@
 //! - scrypt
 //! - Cipheriv & Decipheriv (aes-128-gcm, aes-256-gcm, chacha20-poly1305)
 //! - `generate_key_pair` (rsa-[2048, 3072, 4096], rsa-pss-[2048, 3072, 4096], ecdsa-[prime256v1, secp256k1, secp384r1], ed25519)
-//!
-//! # Working In Process
 //! - KeyObject
+//! 
+//! # Working In Process
+//! - create_public_key & create_private_key
 //! - Sign & Verify
 //! - ECDH
 //! - DiffieHellman
@@ -55,6 +56,9 @@ pub use key::{
     generate_key_pair, KeyEncodingFormat, PrivateKey, PrivateKeyEncodingType, PublicKey,
     PublicKeyEncodingType,
 };
+
+mod sign;
+pub use sign::sign;
 
 pub type CryptoErrno = raw::CryptoErrno;
 
