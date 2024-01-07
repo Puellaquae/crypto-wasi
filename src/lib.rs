@@ -32,6 +32,10 @@
 //! But in wasi-crypto, each key is required to be bound to a kind of algorithms,
 //! which cause some complications when managing keys and reusing keys.
 //! So we're not going to implement `SecretKey`.
+//! 
+//! # Known Issues:
+//! - ECDSA_P384_SHA384 key export as Jwk: elliptic curve routines:ec_GFp_simple_point2oct:buffer too small
+//! - ECDSA_P384_SHA384 in sign & verify use sha256 as digest actually
 
 /// Low-level binding to `wasi-crypto`
 pub mod raw;
@@ -58,7 +62,7 @@ pub use key::{
 };
 
 mod sign;
-pub use sign::sign;
+pub use sign::{sign, verify};
 
 pub type CryptoErrno = raw::CryptoErrno;
 

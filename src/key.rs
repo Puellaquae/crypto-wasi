@@ -11,7 +11,7 @@ pub enum KeyEncodingFormat {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CurveKind {
+pub(crate) enum CurveKind {
     Prime256v1,
     Secp256k1,
     Secp384r1,
@@ -23,11 +23,36 @@ const OID_CURVE_SECP384R1: &str = "1.3.132.0.34";
 const OID_ED25519: &str = "1.3.101.112";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AlgoKind {
+pub(crate) enum DigestKind {
+    SHA256,
+    SHA384,
+    SHA512,
+}
+
+/// Supported algorithm list:
+///
+/// - "ECDSA_P256_SHA256" prime256v1 (curve name used in nodejs)
+/// - "ECDSA_K256_SHA256" secp256k1
+/// - "ECDSA_P384_SHA384" secp384r1
+/// - "ED25519"
+/// - "RSA_PKCS1_2048_SHA256"
+/// - "RSA_PKCS1_2048_SHA384"
+/// - "RSA_PKCS1_2048_SHA512"
+/// - "RSA_PKCS1_3072_SHA384"
+/// - "RSA_PKCS1_3072_SHA512"
+/// - "RSA_PKCS1_4096_SHA512"
+/// - "RSA_PSS_2048_SHA256"
+/// - "RSA_PSS_2048_SHA384"
+/// - "RSA_PSS_2048_SHA512"
+/// - "RSA_PSS_3072_SHA384"
+/// - "RSA_PSS_3072_SHA512"
+/// - "RSA_PSS_4096_SHA512"
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AlgoKind {
     Ed,
     Ec(CurveKind),
-    Rsa(i32),
-    RsaPss(i32),
+    Rsa(i32, DigestKind),
+    RsaPss(i32, DigestKind),
 }
 
 impl AlgoKind {
@@ -37,26 +62,102 @@ impl AlgoKind {
         let a = iter.next();
         let b = iter.next();
         let c = iter.next();
-        match (a, b, c) {
-            (Some("ED25519"), _, _) => Ok(AlgoKind::Ed),
-            (Some("ECDSA"), Some("P256"), _) => Ok(AlgoKind::Ec(CurveKind::Prime256v1)),
-            (Some("ECDSA"), Some("K256"), _) => Ok(AlgoKind::Ec(CurveKind::Secp256k1)),
-            (Some("ECDSA"), Some("P384"), _) => Ok(AlgoKind::Ec(CurveKind::Secp384r1)),
-            (Some("RSA"), Some("PKCS1"), Some("2048")) => Ok(AlgoKind::Rsa(2048)),
-            (Some("RSA"), Some("PKCS1"), Some("3072")) => Ok(AlgoKind::Rsa(3072)),
-            (Some("RSA"), Some("PKCS1"), Some("4096")) => Ok(AlgoKind::Rsa(4096)),
-            (Some("RSA"), Some("PSS"), Some("2048")) => Ok(AlgoKind::RsaPss(2048)),
-            (Some("RSA"), Some("PSS"), Some("3072")) => Ok(AlgoKind::RsaPss(3072)),
-            (Some("RSA"), Some("PSS"), Some("4096")) => Ok(AlgoKind::RsaPss(4096)),
+        let d = iter.next();
+        match (a, b, c, d) {
+            (Some("ED25519"), _, _, _) => Ok(AlgoKind::Ed),
+            (Some("ECDSA"), Some("P256"), _, _) => Ok(AlgoKind::Ec(CurveKind::Prime256v1)),
+            (Some("ECDSA"), Some("K256"), _, _) => Ok(AlgoKind::Ec(CurveKind::Secp256k1)),
+            (Some("ECDSA"), Some("P384"), _, _) => Ok(AlgoKind::Ec(CurveKind::Secp384r1)),
+            (Some("RSA"), Some("PKCS1"), Some("2048"), None | Some("SHA256")) => {
+                Ok(AlgoKind::Rsa(2048, DigestKind::SHA256))
+            }
+            (Some("RSA"), Some("PKCS1"), Some("2048"), Some("SHA384")) => {
+                Ok(AlgoKind::Rsa(2048, DigestKind::SHA384))
+            }
+            (Some("RSA"), Some("PKCS1"), Some("2048"), Some("SHA512")) => {
+                Ok(AlgoKind::Rsa(2048, DigestKind::SHA512))
+            }
+            (Some("RSA"), Some("PKCS1"), Some("3072"), None | Some("SHA384")) => {
+                Ok(AlgoKind::Rsa(3072, DigestKind::SHA384))
+            }
+            (Some("RSA"), Some("PKCS1"), Some("3072"), Some("SHA512")) => {
+                Ok(AlgoKind::Rsa(3072, DigestKind::SHA512))
+            }
+            (Some("RSA"), Some("PKCS1"), Some("4096"), None | Some("SHA512")) => {
+                Ok(AlgoKind::Rsa(4096, DigestKind::SHA512))
+            }
+            (Some("RSA"), Some("PSS"), Some("2048"), None | Some("SHA256")) => {
+                Ok(AlgoKind::RsaPss(2048, DigestKind::SHA256))
+            }
+            (Some("RSA"), Some("PSS"), Some("2048"), Some("SHA384")) => {
+                Ok(AlgoKind::RsaPss(2048, DigestKind::SHA384))
+            }
+            (Some("RSA"), Some("PSS"), Some("2048"), Some("SHA512")) => {
+                Ok(AlgoKind::RsaPss(2048, DigestKind::SHA512))
+            }
+            (Some("RSA"), Some("PSS"), Some("3072"), None | Some("SHA384")) => {
+                Ok(AlgoKind::RsaPss(3072, DigestKind::SHA384))
+            }
+            (Some("RSA"), Some("PSS"), Some("3072"), Some("SHA512")) => {
+                Ok(AlgoKind::RsaPss(3072, DigestKind::SHA512))
+            }
+            (Some("RSA"), Some("PSS"), Some("4096"), None | Some("SHA512")) => {
+                Ok(AlgoKind::RsaPss(4096, DigestKind::SHA512))
+            }
             _ => Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
+        }
+    }
+
+    pub(crate) fn to_str(&self) -> &'static str {
+        match self {
+            AlgoKind::Ed => "ED25519",
+            AlgoKind::Ec(curve) => match curve {
+                CurveKind::Prime256v1 => "ECDSA_P256_SHA256",
+                CurveKind::Secp256k1 => "ECDSA_K256_SHA256",
+                CurveKind::Secp384r1 => "ECDSA_P384_SHA384",
+            },
+            AlgoKind::Rsa(len, digest) => match len {
+                2048 => match digest {
+                    DigestKind::SHA256 => "RSA_PKCS1_2048_SHA256",
+                    DigestKind::SHA384 => "RSA_PKCS1_2048_SHA384",
+                    DigestKind::SHA512 => "RSA_PKCS1_2048_SHA512",
+                },
+                3072 => match digest {
+                    DigestKind::SHA384 => "RSA_PKCS1_3072_SHA384",
+                    DigestKind::SHA512 => "RSA_PKCS1_3072_SHA512",
+                    _ => unreachable!(),
+                },
+                4096 => match digest {
+                    DigestKind::SHA512 => "RSA_PKCS1_4096_SHA512",
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            },
+            AlgoKind::RsaPss(len, digest) => match len {
+                2048 => match digest {
+                    DigestKind::SHA256 => "RSA_PSS_2048_SHA256",
+                    DigestKind::SHA384 => "RSA_PSS_2048_SHA384",
+                    DigestKind::SHA512 => "RSA_PSS_2048_SHA512",
+                },
+                3072 => match digest {
+                    DigestKind::SHA384 => "RSA_PSS_3072_SHA384",
+                    DigestKind::SHA512 => "RSA_PSS_3072_SHA512",
+                    _ => unreachable!(),
+                },
+                4096 => match digest {
+                    DigestKind::SHA512 => "RSA_PSS_4096_SHA512",
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            },
         }
     }
 }
 
 /// `crypto.KeyObject` for public (asymmetric) keys
 pub struct PublicKey {
-    pub handle: raw::Publickey,
-    algo: AlgoKind,
+    pub(crate) handle: raw::Publickey,
+    pub(crate) algo: AlgoKind,
 }
 
 /// Setting encoding type for export [PublicKey]
@@ -104,13 +205,13 @@ impl PublicKey {
         // for ecdsa support der-spki(pkcs8), pem-spki(pem), bin-raw(sec)
         // for eddsa support bin-raw(raw)
         match (self.algo, kind, format) {
-            (AlgoKind::Rsa(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem)
-            | (AlgoKind::RsaPss(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem)
+            (AlgoKind::Rsa(_, _), PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem)
+            | (AlgoKind::RsaPss(_, _), PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem)
             | (AlgoKind::Ec(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem) => {
                 publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PEM)
             }
-            (AlgoKind::Rsa(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Der)
-            | (AlgoKind::RsaPss(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Der)
+            (AlgoKind::Rsa(_, _), PublicKeyEncodingType::Spki, KeyEncodingFormat::Der)
+            | (AlgoKind::RsaPss(_, _), PublicKeyEncodingType::Spki, KeyEncodingFormat::Der)
             | (AlgoKind::Ec(_), PublicKeyEncodingType::Spki, KeyEncodingFormat::Der) => {
                 publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8)
             }
@@ -129,7 +230,7 @@ impl PublicKey {
                 let jwk = format!(r#"{{"x":"{x}","y":"{y}","kty":"EC","crv":"{curve_name}"}}"#);
                 Ok(jwk.into_bytes())
             }
-            (AlgoKind::Rsa(_), _, KeyEncodingFormat::Jwk) => {
+            (AlgoKind::Rsa(_, _), _, KeyEncodingFormat::Jwk) => {
                 let der = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8)?;
                 let raw = SubjectPublicKeyInfo::from_der(&der)
                     .unwrap()
@@ -142,7 +243,7 @@ impl PublicKey {
                 let jwk = format!(r#"{{"n":"{n}","e":"{e}","kty":"RSA"}}"#);
                 Ok(jwk.into_bytes())
             }
-            (AlgoKind::RsaPss(_), _, KeyEncodingFormat::Jwk) => {
+            (AlgoKind::RsaPss(_, _), _, KeyEncodingFormat::Jwk) => {
                 Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING)
             }
             (AlgoKind::Ed, PublicKeyEncodingType::Spki, KeyEncodingFormat::Der)
@@ -172,8 +273,8 @@ impl PublicKey {
                 let jwk = format!(r#"{{"crv":"Ed25519","x":"{x}","kty":"OKP"}}"#);
                 Ok(jwk.into_bytes())
             }
-            (AlgoKind::Rsa(_), PublicKeyEncodingType::Pkcs1, KeyEncodingFormat::Pem)
-            | (AlgoKind::Rsa(_), PublicKeyEncodingType::Pkcs1, KeyEncodingFormat::Der) => {
+            (AlgoKind::Rsa(_, _), PublicKeyEncodingType::Pkcs1, KeyEncodingFormat::Pem)
+            | (AlgoKind::Rsa(_, _), PublicKeyEncodingType::Pkcs1, KeyEncodingFormat::Der) => {
                 let der = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PKCS8)?;
                 let rsa_pk = SubjectPublicKeyInfo::from_der(&der)
                     .unwrap()
@@ -200,7 +301,7 @@ pub struct PrivateKey {
     pub(crate) handle: raw::Secretkey,
     /// we need store keypair handle because WasmEdge not implemented `keypair_from_pk_and_sk`
     pub(crate) keypair_handle: raw::Keypair,
-    algo: AlgoKind,
+    pub(crate) algo: AlgoKind,
 }
 
 /// Setting encoding type for export [PrivateKey]
@@ -213,7 +314,8 @@ pub enum PrivateKeyEncodingType {
 
 impl PrivateKey {
     fn get_publickey(&self) -> Result<PublicKey, CryptoErrno> {
-        let pk = unsafe { raw::publickey_from_secretkey(self.handle) }?;
+        // let pk = unsafe { raw::publickey_from_secretkey(self.handle) }?;
+        let pk = unsafe { raw::keypair_publickey(self.keypair_handle) }?;
         Ok(PublicKey {
             handle: pk,
             algo: self.algo,
@@ -230,15 +332,15 @@ impl PrivateKey {
         // for eddsa support bin-raw(raw)
         match (self.algo, kind, format) {
             (AlgoKind::Ec(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem)
-            | (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem)
-            | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem) => {
+            | (AlgoKind::Rsa(_, _), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem)
+            | (AlgoKind::RsaPss(_, _), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem) => {
                 secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PEM)
             }
             (AlgoKind::Ec(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der)
-            | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
+            | (AlgoKind::RsaPss(_, _), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
                 secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PKCS8)
             }
-            (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
+            (AlgoKind::Rsa(_, _), PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
                 let pkcs8 = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_PEM)?;
                 pem::parse(pkcs8)
                     .map(|p| p.contents)
@@ -266,8 +368,8 @@ impl PrivateKey {
                     KeyEncodingFormat::Jwk => unreachable!(),
                 }
             }
-            (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Pem)
-            | (AlgoKind::Rsa(_), PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Der) => {
+            (AlgoKind::Rsa(_, _), PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Pem)
+            | (AlgoKind::Rsa(_, _), PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Der) => {
                 let pkcs8 = self.export(PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der)?;
                 let raw = PrivateKeyInfo::from_der(&pkcs8).unwrap().private_key;
                 match format {
@@ -317,25 +419,30 @@ impl PrivateKey {
                 Ok(jwk.into_bytes())
             }
             (AlgoKind::Ec(curve), _, KeyEncodingFormat::Jwk) => {
-                let bin = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
-                let d = URL_SAFE_NO_PAD.encode(bin);
+                let bins = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
                 let curve_name = match curve {
                     CurveKind::Prime256v1 => "P-256",
                     CurveKind::Secp256k1 => "secp256k1",
                     CurveKind::Secp384r1 => "P-384",
                 };
                 let pk = self.get_publickey()?;
-                let bin = publickey_export(pk.handle, raw::PUBLICKEY_ENCODING_SEC)?;
-                let compress_kind = bin[0];
+                let binp = publickey_export(pk.handle, raw::PUBLICKEY_ENCODING_SEC)?;
+                let compress_kind = binp[0];
                 // rfc5480, sec1 2.3.3
-                assert!(compress_kind == 0x04, "only support uncompressed form now");
-                let x = URL_SAFE_NO_PAD.encode(&bin[1..33]);
-                let y = URL_SAFE_NO_PAD.encode(&bin[33..65]);
-                let jwk =
-                    format!(r#"{{"x":"{x}","y":"{y}","kty":"EC","crv":"{curve_name}","d":"{d}"}}"#);
-                Ok(jwk.into_bytes())
+                // assert!(compress_kind == 0x04, "only support uncompressed form now");
+                if compress_kind != 0x04 {
+                    Err(raw::CRYPTO_ERRNO_NOT_IMPLEMENTED)
+                } else {
+                    let d = URL_SAFE_NO_PAD.encode(bins);
+                    let x = URL_SAFE_NO_PAD.encode(&binp[1..33]);
+                    let y = URL_SAFE_NO_PAD.encode(&binp[33..65]);
+                    let jwk = format!(
+                        r#"{{"x":"{x}","y":"{y}","kty":"EC","crv":"{curve_name}","d":"{d}"}}"#
+                    );
+                    Ok(jwk.into_bytes())
+                }
             }
-            (AlgoKind::Rsa(_), _, KeyEncodingFormat::Jwk) => {
+            (AlgoKind::Rsa(_, _), _, KeyEncodingFormat::Jwk) => {
                 let pkcs1 = self.export(PrivateKeyEncodingType::Pkcs1, KeyEncodingFormat::Der)?;
                 let raw = RsaPrivateKey::from_der(&pkcs1).unwrap();
                 let n = URL_SAFE_NO_PAD.encode(raw.modulus.as_bytes());
@@ -351,13 +458,13 @@ impl PrivateKey {
                 );
                 Ok(jwk.into_bytes())
             }
-            (AlgoKind::Rsa(_), PrivateKeyEncodingType::Sec1, _)
-            | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Sec1, _)
+            (AlgoKind::Rsa(_, _), PrivateKeyEncodingType::Sec1, _)
+            | (AlgoKind::RsaPss(_, _), PrivateKeyEncodingType::Sec1, _)
             | (AlgoKind::Ed, PrivateKeyEncodingType::Sec1, _)
-            | (AlgoKind::RsaPss(_), _, KeyEncodingFormat::Jwk)
+            | (AlgoKind::RsaPss(_, _), _, KeyEncodingFormat::Jwk)
             | (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs1, _)
             | (AlgoKind::Ec(_), PrivateKeyEncodingType::Pkcs1, _)
-            | (AlgoKind::RsaPss(_), PrivateKeyEncodingType::Pkcs1, _) => {
+            | (AlgoKind::RsaPss(_, _), PrivateKeyEncodingType::Pkcs1, _) => {
                 Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING)
             }
         }
@@ -367,8 +474,8 @@ impl PrivateKey {
         match self.algo {
             AlgoKind::Ed => "ed25519",
             AlgoKind::Ec(_) => "ec",
-            AlgoKind::Rsa(_) => "rsa",
-            AlgoKind::RsaPss(_) => "rsa-pss",
+            AlgoKind::Rsa(_, _) => "rsa",
+            AlgoKind::RsaPss(_, _) => "rsa-pss",
         }
     }
 }
