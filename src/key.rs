@@ -1,4 +1,7 @@
-use crate::{raw, CryptoErrno, NONE_OPTS};
+use crate::{
+    raw::{self, CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM},
+    CryptoErrno, NONE_OPTS,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
 /// Setting encoding format for export [PublicKey] and [PrivateKey]
@@ -21,6 +24,7 @@ const OID_CURVE_PRIME256V1: &str = "1.2.840.10045.3.1.7";
 const OID_CURVE_SECP256K1: &str = "1.3.132.0.10";
 const OID_CURVE_SECP384R1: &str = "1.3.132.0.34";
 const OID_ED25519: &str = "1.3.101.112";
+const OID_X25519: &str = "1.3.101.110";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DigestKind {
@@ -47,12 +51,14 @@ pub(crate) enum DigestKind {
 /// - "RSA_PSS_3072_SHA384"
 /// - "RSA_PSS_3072_SHA512"
 /// - "RSA_PSS_4096_SHA512"
+/// - "X25519"
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AlgoKind {
     Ed,
     Ec(CurveKind),
     Rsa(i32, DigestKind),
     RsaPss(i32, DigestKind),
+    X25519,
 }
 
 impl AlgoKind {
@@ -65,6 +71,7 @@ impl AlgoKind {
         let d = iter.next();
         match (a, b, c, d) {
             (Some("ED25519"), _, _, _) => Ok(AlgoKind::Ed),
+            (Some("X25519"), _, _, _) => Ok(AlgoKind::X25519),
             (Some("ECDSA"), Some("P256"), _, _) => Ok(AlgoKind::Ec(CurveKind::Prime256v1)),
             (Some("ECDSA"), Some("K256"), _, _) => Ok(AlgoKind::Ec(CurveKind::Secp256k1)),
             (Some("ECDSA"), Some("P384"), _, _) => Ok(AlgoKind::Ec(CurveKind::Secp384r1)),
@@ -111,6 +118,7 @@ impl AlgoKind {
     pub(crate) fn to_str(&self) -> &'static str {
         match self {
             AlgoKind::Ed => "ED25519",
+            AlgoKind::X25519 => "X25519",
             AlgoKind::Ec(curve) => match curve {
                 CurveKind::Prime256v1 => "ECDSA_P256_SHA256",
                 CurveKind::Secp256k1 => "ECDSA_K256_SHA256",
@@ -292,6 +300,57 @@ impl PublicKey {
                 }
             }
             (_, PublicKeyEncodingType::Pkcs1, _) => Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING),
+            (AlgoKind::X25519, PublicKeyEncodingType::Spki, KeyEncodingFormat::Pem)
+            | (AlgoKind::X25519, PublicKeyEncodingType::Spki, KeyEncodingFormat::Der) => {
+                let raw = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_RAW)?;
+                let skpi = SubjectPublicKeyInfo {
+                    algorithm: AlgorithmIdentifier {
+                        algorithm: ObjectIdentifier::new(OID_X25519).unwrap(),
+                        parameters: None,
+                    },
+                    subject_public_key: BitStringRef::new(0, &raw).unwrap(),
+                };
+                let der = skpi.to_der().unwrap();
+                if format == KeyEncodingFormat::Der {
+                    Ok(der)
+                } else {
+                    Ok(pem::encode(&pem::Pem {
+                        tag: "PUBLIC KEY".to_string(),
+                        contents: der,
+                    })
+                    .into_bytes())
+                }
+            }
+            (AlgoKind::X25519, PublicKeyEncodingType::Spki, KeyEncodingFormat::Jwk) => {
+                let raw = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_RAW)?;
+                let x = URL_SAFE_NO_PAD.encode(raw);
+                let jwk = format!(r#"{{"crv":"X25519","x":"{x}","kty":"OKP"}}"#);
+                Ok(jwk.into_bytes())
+            }
+        }
+    }
+
+    pub(crate) fn cast_to_dh_key(&self) -> Result<PublicKey, CryptoErrno> {
+        match self.algo {
+            AlgoKind::Ec(CurveKind::Prime256v1) | AlgoKind::Ec(CurveKind::Secp384r1) => unsafe {
+                let raw = publickey_export(self.handle, raw::PUBLICKEY_ENCODING_PEM)?;
+                let pk = raw::publickey_import(
+                    raw::ALGORITHM_TYPE_KEY_EXCHANGE,
+                    if self.algo == AlgoKind::Ec(CurveKind::Prime256v1) {
+                        "P256-SHA256"
+                    } else {
+                        "P384-SHA384"
+                    },
+                    raw.as_ptr(),
+                    raw.len(),
+                    raw::PUBLICKEY_ENCODING_PEM,
+                )?;
+                Ok(PublicKey {
+                    handle: pk,
+                    algo: self.algo,
+                })
+            },
+            _ => Err(CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
         }
     }
 }
@@ -347,11 +406,18 @@ impl PrivateKey {
                     .or(Err(raw::CRYPTO_ERRNO_ALGORITHM_FAILURE))
             }
             (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem)
-            | (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
+            | (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der)
+            | (AlgoKind::X25519, PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Pem)
+            | (AlgoKind::X25519, PrivateKeyEncodingType::Pkcs8, KeyEncodingFormat::Der) => {
                 let raw = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
                 let der = PrivateKeyInfo::new(
                     AlgorithmIdentifier {
-                        algorithm: ObjectIdentifier::new(OID_ED25519).unwrap(),
+                        algorithm: ObjectIdentifier::new(if self.algo == AlgoKind::Ed {
+                            OID_ED25519
+                        } else {
+                            OID_X25519
+                        })
+                        .unwrap(),
                         parameters: None,
                     },
                     &OctetString::new(raw).unwrap().to_der().unwrap(),
@@ -409,13 +475,21 @@ impl PrivateKey {
                     KeyEncodingFormat::Jwk => unreachable!(),
                 }
             }
-            (AlgoKind::Ed, _, KeyEncodingFormat::Jwk) => {
+            (AlgoKind::Ed, _, KeyEncodingFormat::Jwk)
+            | (AlgoKind::X25519, _, KeyEncodingFormat::Jwk) => {
                 let raw = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
                 let d = URL_SAFE_NO_PAD.encode(raw);
                 let pk = self.get_publickey()?;
                 let pkraw = publickey_export(pk.handle, raw::PUBLICKEY_ENCODING_RAW)?;
                 let x = URL_SAFE_NO_PAD.encode(pkraw);
-                let jwk = format!(r#"{{"crv":"Ed25519","d":"{d}","x":"{x}","kty":"OKP"}}"#);
+                let jwk = format!(
+                    r#"{{"crv":"{}","d":"{d}","x":"{x}","kty":"OKP"}}"#,
+                    if self.algo == AlgoKind::X25519 {
+                        "X25519"
+                    } else {
+                        "Ed25519"
+                    }
+                );
                 Ok(jwk.into_bytes())
             }
             (AlgoKind::Ec(curve), _, KeyEncodingFormat::Jwk) => {
@@ -464,7 +538,8 @@ impl PrivateKey {
             | (AlgoKind::RsaPss(_, _), _, KeyEncodingFormat::Jwk)
             | (AlgoKind::Ed, PrivateKeyEncodingType::Pkcs1, _)
             | (AlgoKind::Ec(_), PrivateKeyEncodingType::Pkcs1, _)
-            | (AlgoKind::RsaPss(_, _), PrivateKeyEncodingType::Pkcs1, _) => {
+            | (AlgoKind::RsaPss(_, _), PrivateKeyEncodingType::Pkcs1, _)
+            | (AlgoKind::X25519, PrivateKeyEncodingType::Pkcs1 | PrivateKeyEncodingType::Sec1, _) => {
                 Err(raw::CRYPTO_ERRNO_UNSUPPORTED_ENCODING)
             }
         }
@@ -476,6 +551,33 @@ impl PrivateKey {
             AlgoKind::Ec(_) => "ec",
             AlgoKind::Rsa(_, _) => "rsa",
             AlgoKind::RsaPss(_, _) => "rsa-pss",
+            AlgoKind::X25519 => "x25519",
+        }
+    }
+
+    pub(crate) fn cast_to_dh_key(&self) -> Result<PrivateKey, CryptoErrno> {
+        match self.algo {
+            AlgoKind::Ec(CurveKind::Prime256v1) | AlgoKind::Ec(CurveKind::Secp384r1) => unsafe {
+                let raw = secretkey_export(self.handle, raw::SECRETKEY_ENCODING_RAW)?;
+                let sk = raw::secretkey_import(
+                    raw::ALGORITHM_TYPE_KEY_EXCHANGE,
+                    if self.algo == AlgoKind::Ec(CurveKind::Prime256v1) {
+                        "P256-SHA256"
+                    } else {
+                        "P384-SHA384"
+                    },
+                    raw.as_ptr(),
+                    raw.len(),
+                    raw::SECRETKEY_ENCODING_RAW,
+                )?;
+                // we can't reconstruct a keypair because WasmEdge not implemented `keypair_from_pk_and_sk`
+                Ok(PrivateKey {
+                    handle: sk,
+                    keypair_handle: 0,
+                    algo: self.algo,
+                })
+            },
+            _ => Err(CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
         }
     }
 }
@@ -505,7 +607,15 @@ impl PrivateKey {
 pub fn generate_key_pair(algorithm: &str) -> Result<(PublicKey, PrivateKey), CryptoErrno> {
     let algo = AlgoKind::from_str(algorithm)?;
     let (pk, sk, kp) = unsafe {
-        let kp = raw::keypair_generate(raw::ALGORITHM_TYPE_SIGNATURES, algorithm, NONE_OPTS)?;
+        let kp = raw::keypair_generate(
+            if matches!(algo, AlgoKind::X25519) {
+                raw::ALGORITHM_TYPE_KEY_EXCHANGE
+            } else {
+                raw::ALGORITHM_TYPE_SIGNATURES
+            },
+            algorithm,
+            NONE_OPTS,
+        )?;
         (raw::keypair_publickey(kp)?, raw::keypair_secretkey(kp)?, kp)
     };
     Ok((

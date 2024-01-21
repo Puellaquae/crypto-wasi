@@ -1,6 +1,8 @@
 use crate::{
     key::{AlgoKind, CurveKind},
-    raw::{self, SIGNATURE_ENCODING_DER, SIGNATURE_ENCODING_RAW},
+    raw::{
+        self, CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM, SIGNATURE_ENCODING_DER, SIGNATURE_ENCODING_RAW,
+    },
     CryptoErrno, PrivateKey, PublicKey,
 };
 
@@ -42,6 +44,7 @@ pub fn sign(datas: &[impl AsRef<[u8]>], key: &PrivateKey) -> Result<Vec<u8>, Cry
 
                 buf
             }
+            AlgoKind::X25519 => return Err(CRYPTO_ERRNO_UNSUPPORTED_ALGORITHM),
         };
 
         raw::signature_close(sig)?;

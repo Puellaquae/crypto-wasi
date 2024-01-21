@@ -7,20 +7,21 @@
 //!
 //! # Currently Subset Implemented
 //!
-//! - Hash (sha256, sha512, sha512-256)
-//! - Hmac (sha256, sha512)
-//! - hkdf (sha256, sha512)
-//! - pbkdf2 (sha256, sha512)
-//! - scrypt
-//! - Cipheriv & Decipheriv (aes-128-gcm, aes-256-gcm, chacha20-poly1305)
-//! - `generate_key_pair` (rsa-[2048, 3072, 4096], rsa-pss-[2048, 3072, 4096], ecdsa-[prime256v1, secp256k1, secp384r1], ed25519)
-//! - KeyObject
+//! - [Hash] (sha256, sha512, sha512-256)
+//! - [Hmac] (sha256, sha512)
+//! - [hkdf] (sha256, sha512)
+//! - [pbkdf2] (sha256, sha512)
+//! - [scrypt](scrypt::scrypt)
+//! - [Cipheriv] & [Decipheriv] (aes-128-gcm, aes-256-gcm, chacha20-poly1305)
+//! - [generate_key_pair] (rsa-[2048, 3072, 4096], rsa-pss-[2048, 3072, 4096], ecdsa-[prime256v1, secp256k1, secp384r1], ed25519, x25519)
+//! - KeyObject ([PublicKey] & [PrivateKey])
+//! - [sign] & [verify]
+//! - [diffie_hellman]
 //! 
 //! # Working In Process
 //! - create_public_key & create_private_key
-//! - Sign & Verify
-//! - ECDH
-//! - DiffieHellman
+//! - ECDH (you can use generate_key_pair and diffie_hellman as alternatives)
+
 //!
 //! # Not Implemented
 //! - `createCipher` & `createDecipher`:
@@ -63,6 +64,9 @@ pub use key::{
 
 mod sign;
 pub use sign::{sign, verify};
+
+mod dh;
+pub use dh::diffie_hellman;
 
 pub type CryptoErrno = raw::CryptoErrno;
 
